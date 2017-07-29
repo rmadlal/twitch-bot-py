@@ -35,36 +35,44 @@ class TwitchIRCHandler(object):
 
     def connect(self):
         self._sock.connect((HOST, PORT))
-        self._sock.send(bytes('PASS ' + PASS + '\r\n', 'UTF-8'))
-        self._sock.send(bytes('NICK ' + BOT_USERNAME + '\r\n', 'UTF-8'))
-        self._sock.send(bytes('JOIN #' + MY_USERNAME + '\r\n', 'UTF-8'))
+        self._sock.send(bytes('PASS ' + PASS + '\r\n', 'utf-8'))
+        self._sock.send(bytes('NICK ' + BOT_USERNAME + '\r\n', 'utf-8'))
+        self._sock.send(bytes('JOIN #' + MY_USERNAME + '\r\n', 'utf-8'))
         while True:
-            received = self.receive()
+            received = self._sock.recv(1024).decode()
             if not received:
+                print('Connection failed')
+                self._sock.close()
                 return False
-            for line in received:
-                if 'End of /NAMES list' in line:
-                    print("Connected to " + MY_USERNAME + "'s Twitch chat.")
-                    return True
+            if 'End of /NAMES list' in received:
+                print("Connected to " + MY_USERNAME + "'s Twitch chat.")
+                return True
 
     def disconnect(self):
         self._sock.close()
 
-    def receive(self):
-        received = str(self._sock.recv(1024))
+    def get_messages(self):
+        received = self._sock.recv(1024).decode()
         if not received:
             print('Connection reset')
             self._sock.close()
-            return []
-        return received.split('\\r\\n')
-
-    def pong(self):
-        self._sock.send(bytes('PONG :tmi.twitch.tv' + '\r\n', 'UTF-8'))
+            return
+        lines = received.split('\r\n')
+        messages = []
+        for line in lines:
+            if 'PRIVMSG' not in line:
+                if 'PING' in line:
+                    self._sock.send(bytes('PONG :tmi.twitch.tv' + '\r\n', 'utf-8'))
+                continue
+            head, sep, message = line[line.find(':') + 1:].partition(':')
+            username = head[:head.find('!')]
+            messages.append((username, message))
+        return messages
 
     def say(self, msg):
         msg = msg.replace('\n', ' ')
         print('> ' + msg)
-        self._sock.send(bytes('PRIVMSG #' + MY_USERNAME + ' :' + msg + '\r\n', 'UTF-8'))
+        self._sock.send(bytes('PRIVMSG #' + MY_USERNAME + ' :' + msg + '\r\n', 'utf-8'))
 
     def action(self, msg):
         self.say(msg if msg.startswith('/me ') else '/me ' + msg)
@@ -90,12 +98,6 @@ class TwitchIRCHandler(object):
         else:
             self.action('Usage: !pyramid [<size>] <text>')
 
-    @staticmethod
-    def extract_message(line):
-        head, sep, message = line[line.find(':') + 1:].partition(':')
-        username = head[:head.find('!')]
-        return username, message
-
 
 class TwitchAPIHandler(object):
 
@@ -109,14 +111,15 @@ class TwitchAPIHandler(object):
         self._twitch_client.channels.update(CHANNEL_ID, status=title)
 
     # Commands
-    def command_highlight(self):
+    def command_highlight(self, irc_client):
         stream = self._twitch_client.streams.get_stream_by_user(CHANNEL_ID)
         if not stream:
             return
-        delta = (datetime.utcnow() - stream.created_at).seconds
+        delta = (datetime.utcnow() - stream['created_at']).seconds
         timestamp = '{}:{:02}'.format(delta // 60 ** 2, delta // 60 % 60)
         with open('timestamps.txt', 'a') as ts_file:
             ts_file.write(timestamp + '\n')
+        irc_client.action('Timestamp saved! [' + timestamp + ']')
 
 
 class JokeHandler(object):
@@ -137,4 +140,5 @@ class JokeHandler(object):
         if not self._joke_cache:
             self._fetch_jokes()
         joke = random.choice(self._joke_cache)
+        self._joke_cache.remove(joke)
         return ' '.join(joke).replace('\n', ' ')
