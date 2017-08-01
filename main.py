@@ -22,11 +22,11 @@ def set_interval(func, sec):
 def print_viewers():
     with urllib.request.urlopen('http://tmi.twitch.tv/group/user/' + MY_USERNAME + '/chatters') as response:
         data = json.load(response)
-        print(data['chatters']['viewers'])
+        print('Viewers: ' + ', '.join(data['chatters']['viewers']))
 
 
 def main():
-    set_interval(print_viewers(), 2*60)
+    interval_thread = set_interval(print_viewers, 2*60)
 
     irc_client = TwitchIRCHandler()
     twitch_api_handler = TwitchAPIHandler()
@@ -54,6 +54,7 @@ def main():
             elif msg == '!goaway':
                 irc_client.action('Bye')
                 irc_client.disconnect()
+                interval_thread.cancel()
                 sys.exit(0)
 
     if not irc_client.connect():
