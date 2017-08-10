@@ -14,18 +14,18 @@ MY_USERNAME = 'uncleronny'
 # IRC
 HOST = 'irc.chat.twitch.tv'
 PORT = 6667
-PASS = config["botChatOAuth"]
+PASS = config['botChatOAuth']
 
 # reddit
-REDDIT_CLIENT_ID = config["redditClientID"]
-SECRET = config["redditSecret"]
-USERNAME = config["redditUsername"]
-PASSWORD = config["redditPassword"]
+REDDIT_CLIENT_ID = config['redditClientID']
+SECRET = config['redditSecret']
+USERNAME = config['redditUsername']
+PASSWORD = config['redditPassword']
 
 # Twitch
-CHANNEL_ID = config["myChannelID"]
-CLIENT_ID = config["clientID"]
-API_TOKEN = config["botAPIOAuth"]
+CHANNEL_ID = config['myChannelID']
+CLIENT_ID = config['clientID']
+API_TOKEN = config['botAPIOAuth']
 
 
 class TwitchIRCHandler(object):
@@ -58,16 +58,11 @@ class TwitchIRCHandler(object):
             self._sock.close()
             return
         lines = received.split('\r\n')
-        messages = []
-        for line in lines:
-            if 'PRIVMSG' not in line:
-                if 'PING' in line:
-                    self._sock.send(bytes('PONG :tmi.twitch.tv' + '\r\n', 'utf-8'))
-                continue
-            head, sep, message = line[line.find(':') + 1:].partition(':')
-            username = head[:head.find('!')]
-            messages.append((username, message))
-        return messages
+        messages = [line for line in lines if 'PRIVMSG' in line]
+        pings = [line for line in lines if 'PRIVMSG' not in line and 'PING' in line]
+        for _ in pings:
+            self._sock.send(bytes('PONG :tmi.twitch.tv' + '\r\n', 'utf-8'))
+        return list(map(TwitchIRCHandler._extract_username_message, messages))
 
     def say(self, msg):
         msg = msg.replace('\n', ' ')
@@ -97,6 +92,12 @@ class TwitchIRCHandler(object):
                 self._send_pyramid(' '.join(msg_parts))
         else:
             self.action('Usage: !pyramid [<size>] <text>')
+
+    @staticmethod
+    def _extract_username_message(line):
+        head, sep, message = line[line.find(':') + 1:].partition(':')
+        username = head[:head.find('!')]
+        return username, message
 
 
 class TwitchAPIHandler(object):

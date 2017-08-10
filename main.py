@@ -4,29 +4,38 @@ import urllib.request
 import threading
 import json
 
-# constants
 BOT_USERNAME = 'uncleronnybot'
 MY_USERNAME = 'uncleronny'
 
 
-def set_interval(func, sec):
-    def func_wrapper():
-        set_interval(func, sec)
-        func()
+def fetch_viewers(interval):
+    stopped = threading.Event()
 
-    t = threading.Timer(sec, func_wrapper)
-    t.start()
-    return t
+    def loop():
+        viewers = []
+        while not stopped.wait(interval):
+            with urllib.request.urlopen('http://tmi.twitch.tv/group/user/' + MY_USERNAME + '/chatters') as response:
+                data = json.load(response)
+            new_viewers = data['chatters']['viewers']
+            if new_viewers != viewers:
+                viewers = new_viewers
+                print('> Viewers: ' + ', '.join(viewers))
+
+    threading.Thread(target=loop).start()
+    return stopped.set
 
 
-def print_viewers():
-    with urllib.request.urlopen('http://tmi.twitch.tv/group/user/' + MY_USERNAME + '/chatters') as response:
-        data = json.load(response)
-        print('Viewers: ' + ', '.join(data['chatters']['viewers']))
+def now_playing(irc_client):
+    if sys.argv[1:] and sys.argv[1] == '-m':
+        with open(r'C:\Users\RonMad\Documents\foobar2000_now_playing\now_playing.txt',
+                  encoding='utf-8-sig') as np_file:
+            irc_client.action('Now playing: ' + np_file.readline())
+    else:
+        irc_client.action('N/A')
 
 
 def main():
-    interval_thread = set_interval(print_viewers, 2*60)
+    cancel_fetch_viewers = fetch_viewers(60)
 
     irc_client = TwitchIRCHandler()
     twitch_api_handler = TwitchAPIHandler()
@@ -37,6 +46,7 @@ def main():
         'ChampPog': lambda: irc_client.say('PogChamp'),
         '!help': lambda: irc_client.action('Commands: ' + ' '.join(list(commands.keys())[3:])),
         '!highlight': lambda: twitch_api_handler.command_highlight(irc_client),
+        '!np': lambda: now_playing(irc_client),
         '!pyramid': lambda: irc_client.action('Usage: !pyramid [<size>] <text>'),
         '!joke': lambda: irc_client.say(joke_handler.random_joke())
     }
@@ -45,7 +55,7 @@ def main():
         if msg.startswith('!pyramid '):
             irc_client.command_pyramid(msg)
         elif msg.startswith('!') and username != MY_USERNAME:
-            irc_client.action(commands['!help']())
+            commands['!help']()
         elif username == MY_USERNAME:
             if msg.startswith('!game '):
                 twitch_api_handler.update_game(msg[len('!game '):])
@@ -54,7 +64,7 @@ def main():
             elif msg == '!goaway':
                 irc_client.action('Bye')
                 irc_client.disconnect()
-                interval_thread.cancel()
+                cancel_fetch_viewers()
                 sys.exit(0)
 
     if not irc_client.connect():
