@@ -1,8 +1,8 @@
 from handlers import TwitchIRCHandler, TwitchAPIHandler, JokeHandler
 import sys
-import urllib.request
+import requests
 import threading
-import json
+import random
 
 BOT_USERNAME = 'uncleronnybot'
 MY_USERNAME = 'uncleronny'
@@ -14,12 +14,28 @@ def fetch_viewers(interval):
     def loop():
         viewers = []
         while not stopped.wait(interval):
-            with urllib.request.urlopen('http://tmi.twitch.tv/group/user/' + MY_USERNAME + '/chatters') as response:
-                data = json.load(response)
-            new_viewers = data['chatters']['viewers']
+            with requests.get('http://tmi.twitch.tv/group/user/' + MY_USERNAME + '/chatters') as response:
+                data = response.json()
+            new_viewers = [viewer for viewer in data['chatters']['viewers'] if viewer not in (MY_USERNAME, BOT_USERNAME)]
             if new_viewers != viewers:
                 viewers = new_viewers
                 print('> Viewers: ' + ', '.join(viewers))
+
+    threading.Thread(target=loop).start()
+    return stopped.set
+
+
+def send_random_emote(irc_client, interval):
+    stopped = threading.Event()
+
+    def loop():
+        with requests.get('http://api.frankerfacez.com/v1/room/' + MY_USERNAME) as response:
+            data = response.json()
+        set = data['room']['set']
+        emoticons = data['sets'][str(set)]['emoticons']
+        emote_names = [emote['name'] for emote in emoticons]
+        while not stopped.wait(interval):
+            irc_client.say(random.choice(emote_names))
 
     threading.Thread(target=loop).start()
     return stopped.set
@@ -35,7 +51,10 @@ def now_playing(irc_client):
 
 
 def main():
-    cancel_fetch_viewers = fetch_viewers(60)
+
+    def cancel_repeating_threads():
+        cancel_fetch_viewers()
+        cancel_send_random_emote()
 
     irc_client = TwitchIRCHandler()
     twitch_api_handler = TwitchAPIHandler()
@@ -64,17 +83,22 @@ def main():
             elif msg == '!goaway':
                 irc_client.action('Bye')
                 irc_client.disconnect()
-                cancel_fetch_viewers()
+                cancel_repeating_threads()
                 sys.exit(0)
 
     if not irc_client.connect():
-        return
-    irc_client.say('Hi!')
+        cancel_repeating_threads()
+        sys.exit(1)
 
+    cancel_fetch_viewers = fetch_viewers(60)
+    cancel_send_random_emote = send_random_emote(irc_client, 60*5)
+
+    irc_client.say('Hi!')
     while True:
         messages = irc_client.get_messages()
         if messages is None:
-            return
+            cancel_repeating_threads()
+            sys.exit(1)
         for username, message in messages:
             print(username + ': ' + message)
             if username == BOT_USERNAME:

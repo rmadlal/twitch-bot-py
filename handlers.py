@@ -32,42 +32,60 @@ class TwitchIRCHandler(object):
 
     def __init__(self):
         self._sock = socket.socket()
+        self._retry_count = 3
 
     def connect(self):
-        self._sock.connect((HOST, PORT))
-        self._sock.send(bytes('PASS ' + PASS + '\r\n', 'utf-8'))
-        self._sock.send(bytes('NICK ' + BOT_USERNAME + '\r\n', 'utf-8'))
-        self._sock.send(bytes('JOIN #' + MY_USERNAME + '\r\n', 'utf-8'))
-        while True:
-            received = self._sock.recv(1024).decode()
-            if not received:
-                print('Connection failed')
-                self._sock.close()
+        try:
+            self._sock.connect((HOST, PORT))
+            self._sock.send(bytes('PASS ' + PASS + '\r\n', 'utf-8'))
+            self._sock.send(bytes('NICK ' + BOT_USERNAME + '\r\n', 'utf-8'))
+            self._sock.send(bytes('JOIN #' + MY_USERNAME + '\r\n', 'utf-8'))
+            while True:
+                received = self._sock.recv(1024).decode()
+                if not received:
+                    self._retry_count -= 1
+                    if not self._retry_count:
+                        print('Connection error')
+                        return False
+                    print('Connection error, retrying')
+                    self.connect()
+                if 'End of /NAMES list' in received:
+                    print("Connected to " + MY_USERNAME + "'s Twitch chat.")
+                    return True
+        except socket.error as err:
+            self._retry_count -= 1
+            if not self._retry_count:
+                print('Connection error: ' + err.strerror)
                 return False
-            if 'End of /NAMES list' in received:
-                print("Connected to " + MY_USERNAME + "'s Twitch chat.")
-                return True
+            print('Connection error: ' + err.strerror + '. retrying')
+            self.connect()
 
     def disconnect(self):
         self._sock.close()
 
     def get_messages(self):
-        received = self._sock.recv(1024).decode()
-        if not received:
-            print('Connection reset')
-            self._sock.close()
+        try:
+            received = self._sock.recv(1024).decode()
+            if not received:
+                print('Connection reset')
+                return
+            lines = received.split('\r\n')
+            messages = [line for line in lines if 'PRIVMSG' in line]
+            pings = [line for line in lines if 'PRIVMSG' not in line and 'PING' in line]
+            for _ in pings:
+                self._sock.send(bytes('PONG :tmi.twitch.tv' + '\r\n', 'utf-8'))
+            return list(map(TwitchIRCHandler._extract_username_message, messages))
+        except socket.error as err:
+            print('Connection reset: ' + err.strerror)
             return
-        lines = received.split('\r\n')
-        messages = [line for line in lines if 'PRIVMSG' in line]
-        pings = [line for line in lines if 'PRIVMSG' not in line and 'PING' in line]
-        for _ in pings:
-            self._sock.send(bytes('PONG :tmi.twitch.tv' + '\r\n', 'utf-8'))
-        return list(map(TwitchIRCHandler._extract_username_message, messages))
 
     def say(self, msg):
-        msg = msg.replace('\n', ' ')
-        print('> ' + msg)
-        self._sock.send(bytes('PRIVMSG #' + MY_USERNAME + ' :' + msg + '\r\n', 'utf-8'))
+        try:
+            msg = msg.replace('\n', ' ')
+            print('> ' + msg)
+            self._sock.send(bytes('PRIVMSG #' + MY_USERNAME + ' :' + msg + '\r\n', 'utf-8'))
+        except socket.error as err:
+            print('Connection reset: ' + err.strerror)
 
     def action(self, msg):
         self.say(msg if msg.startswith('/me ') else '/me ' + msg)
