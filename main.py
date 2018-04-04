@@ -14,12 +14,15 @@ def fetch_viewers(interval):
     def loop():
         viewers = []
         while not stopped.wait(interval):
-            with requests.get('http://tmi.twitch.tv/group/user/' + MY_USERNAME + '/chatters') as response:
-                data = response.json()
-            new_viewers = [viewer for viewer in data['chatters']['viewers'] if viewer not in (MY_USERNAME, BOT_USERNAME)]
-            if new_viewers != viewers:
-                viewers = new_viewers
-                print('> Viewers: ' + ', '.join(viewers))
+            with requests.get('http://tmi.twitch.tv/group/user/%s/chatters' % MY_USERNAME) as response:
+                try:
+                    data = response.json()
+                    new_viewers = [viewer for viewer in data['chatters']['viewers'] if viewer not in (MY_USERNAME, BOT_USERNAME)]
+                    if new_viewers != viewers:
+                        viewers = new_viewers
+                        print('> Viewers: ' + ', '.join(viewers))
+                except:
+                    continue
 
     threading.Thread(target=loop).start()
     return stopped.set
@@ -29,7 +32,7 @@ def send_random_emote(irc_client, interval):
     stopped = threading.Event()
 
     def loop():
-        with requests.get('http://api.frankerfacez.com/v1/room/' + MY_USERNAME) as response:
+        with requests.get('http://api.frankerfacez.com/v1/room/%s' % MY_USERNAME) as response:
             data = response.json()
         set = data['room']['set']
         emoticons = data['sets'][str(set)]['emoticons']
@@ -45,7 +48,7 @@ def now_playing(irc_client):
     if sys.argv[1:] and sys.argv[1] == '-m':
         with open(r'C:\Users\RonMad\Documents\foobar2000_now_playing\now_playing.txt',
                   encoding='utf-8-sig') as np_file:
-            irc_client.action('Now playing: ' + np_file.readline())
+            irc_client.action('Now playing: %s' % np_file.readline())
     else:
         irc_client.action('N/A')
 
@@ -53,17 +56,22 @@ def now_playing(irc_client):
 def main():
 
     def cancel_repeating_threads():
-        cancel_fetch_viewers()
-        cancel_send_random_emote()
+        if cancel_fetch_viewers:
+            cancel_fetch_viewers()
+        if cancel_send_random_emote:
+            cancel_send_random_emote()
 
     irc_client = TwitchIRCHandler()
     twitch_api_handler = TwitchAPIHandler()
     joke_handler = JokeHandler()
 
+    cancel_fetch_viewers = None
+    cancel_send_random_emote = None
+
     commands = {
         'PogChamp': lambda: irc_client.say('ChampPog'),
         'ChampPog': lambda: irc_client.say('PogChamp'),
-        '!help': lambda: irc_client.action('Commands: ' + ' '.join(list(commands.keys())[3:])),
+        '!help': lambda: irc_client.action('Commands: %s' % ' '.join(list(commands.keys())[3:])),
         '!highlight': lambda: twitch_api_handler.command_highlight(irc_client),
         '!np': lambda: now_playing(irc_client),
         '!pyramid': lambda: irc_client.action('Usage: !pyramid [<size>] <text>'),
@@ -88,23 +96,23 @@ def main():
 
     if not irc_client.connect():
         cancel_repeating_threads()
-        sys.exit(1)
+        return
 
     cancel_fetch_viewers = fetch_viewers(60)
-    cancel_send_random_emote = send_random_emote(irc_client, 60*5)
+    cancel_send_random_emote = send_random_emote(irc_client, 60*10)
 
-    irc_client.say('Hi!')
     while True:
         messages = irc_client.get_messages()
         if messages is None:
             cancel_repeating_threads()
-            sys.exit(1)
+            return
         for username, message in messages:
-            print(username + ': ' + message)
+            print('%s: %s' % (username, message))
             if username == BOT_USERNAME:
                 continue
             commands.get(message, lambda: other_command(message))()
 
 
 if __name__ == '__main__':
-    main()
+    while True:
+        main()

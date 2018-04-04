@@ -37,9 +37,9 @@ class TwitchIRCHandler(object):
     def connect(self):
         try:
             self._sock.connect((HOST, PORT))
-            self._sock.send(bytes('PASS ' + PASS + '\r\n', 'utf-8'))
-            self._sock.send(bytes('NICK ' + BOT_USERNAME + '\r\n', 'utf-8'))
-            self._sock.send(bytes('JOIN #' + MY_USERNAME + '\r\n', 'utf-8'))
+            self._sock.send(bytes('PASS %s\r\n' % PASS, 'utf-8'))
+            self._sock.send(bytes('NICK %s\r\n' % BOT_USERNAME, 'utf-8'))
+            self._sock.send(bytes('JOIN #%s\r\n' % MY_USERNAME, 'utf-8'))
             while True:
                 received = self._sock.recv(1024).decode()
                 if not received:
@@ -50,14 +50,14 @@ class TwitchIRCHandler(object):
                     print('Connection error, retrying')
                     self.connect()
                 if 'End of /NAMES list' in received:
-                    print("Connected to " + MY_USERNAME + "'s Twitch chat.")
+                    print("Connected to %s's Twitch chat." % MY_USERNAME)
                     return True
         except socket.error as err:
             self._retry_count -= 1
             if not self._retry_count:
-                print('Connection error: ' + err.strerror)
+                print('Connection error: %s' % err.strerror)
                 return False
-            print('Connection error: ' + err.strerror + '. retrying')
+            print('Connection error: %s. Retrying' % err.strerror)
             self.connect()
 
     def disconnect(self):
@@ -73,26 +73,27 @@ class TwitchIRCHandler(object):
             messages = [line for line in lines if 'PRIVMSG' in line]
             pings = [line for line in lines if 'PRIVMSG' not in line and 'PING' in line]
             for _ in pings:
-                self._sock.send(bytes('PONG :tmi.twitch.tv' + '\r\n', 'utf-8'))
+                self._sock.send(bytes('PONG :tmi.twitch.tv\r\n', 'utf-8'))
             return list(map(TwitchIRCHandler._extract_username_message, messages))
         except socket.error as err:
-            print('Connection reset: ' + err.strerror)
+            print('Connection reset: %s' % err.strerror)
             return
 
     def say(self, msg):
         try:
             msg = msg.replace('\n', ' ')
-            print('> ' + msg)
-            self._sock.send(bytes('PRIVMSG #' + MY_USERNAME + ' :' + msg + '\r\n', 'utf-8'))
+            print('> %s' % msg)
+            self._sock.send(bytes('PRIVMSG #%s :%s\r\n' % (MY_USERNAME, msg), 'utf-8'))
         except socket.error as err:
-            print('Connection reset: ' + err.strerror)
+            print('Connection reset: %s' % err.strerror)
 
     def action(self, msg):
-        self.say(msg if msg.startswith('/me ') else '/me ' + msg)
+        self.say(msg if msg.startswith('/me ') else '/me %s' % msg)
 
     # Commands
     def _send_pyramid(self, text, size=3):
         if size not in range(1, 8):
+            self.action('Pyramid size must be between 1 to 7.')
             return
         for i in range(2 * size - 1):
             block = [text] * (i + 1 if i < size else 2 * size - (i + 1))
@@ -138,7 +139,7 @@ class TwitchAPIHandler(object):
         timestamp = '{}:{:02}'.format(delta // 60 ** 2, delta // 60 % 60)
         with open('timestamps.txt', 'a') as ts_file:
             ts_file.write(timestamp + '\n')
-        irc_client.action('Timestamp saved! [' + timestamp + ']')
+        irc_client.action('Timestamp saved! [%s]' % timestamp)
 
 
 class JokeHandler(object):
