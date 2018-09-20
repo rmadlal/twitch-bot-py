@@ -1,15 +1,16 @@
 from twitch import TwitchClient
+from datetime import datetime
 import praw
 import socket
+import requests
 import random
-from datetime import datetime
 import json
 
 with open('botconfig.json') as config_file:
     config = json.load(config_file)
 
-BOT_USERNAME = 'uncleronnybot'
-MY_USERNAME = 'uncleronny'
+BOT_USERNAME = config['botChannelName']
+MY_USERNAME = config['myChannelName']
 
 # IRC
 HOST = 'irc.chat.twitch.tv'
@@ -33,13 +34,14 @@ class TwitchIRCHandler(object):
     def __init__(self):
         self._sock = socket.socket()
         self._retry_count = 3
+        self._ffz_emote_cache = []
 
     def connect(self):
         try:
             self._sock.connect((HOST, PORT))
-            self._sock.send(bytes('PASS %s\r\n' % PASS, 'utf-8'))
-            self._sock.send(bytes('NICK %s\r\n' % BOT_USERNAME, 'utf-8'))
-            self._sock.send(bytes('JOIN #%s\r\n' % MY_USERNAME, 'utf-8'))
+            self._sock.send(bytes(f'PASS {PASS}\r\n', 'utf-8'))
+            self._sock.send(bytes(f'NICK {BOT_USERNAME}\r\n', 'utf-8'))
+            self._sock.send(bytes(f'JOIN #{MY_USERNAME}\r\n', 'utf-8'))
             while True:
                 received = self._sock.recv(1024).decode()
                 if not received:
@@ -50,14 +52,14 @@ class TwitchIRCHandler(object):
                     print('Connection error, retrying')
                     self.connect()
                 if 'End of /NAMES list' in received:
-                    print("Connected to %s's Twitch chat." % MY_USERNAME)
+                    print(f"Connected to {MY_USERNAME}'s Twitch chat.")
                     return True
         except socket.error as err:
             self._retry_count -= 1
             if not self._retry_count:
-                print('Connection error: %s' % err.strerror)
+                print(f'Connection error: {err.strerror}')
                 return False
-            print('Connection error: %s. Retrying' % err.strerror)
+            print(f'Connection error: {err.strerror}. Retrying')
             self.connect()
 
     def disconnect(self):
@@ -76,19 +78,19 @@ class TwitchIRCHandler(object):
                 self._sock.send(bytes('PONG :tmi.twitch.tv\r\n', 'utf-8'))
             return list(map(TwitchIRCHandler._extract_username_message, messages))
         except socket.error as err:
-            print('Connection reset: %s' % err.strerror)
+            print(f'Connection reset: {err.strerror}')
             return
 
     def say(self, msg):
         try:
             msg = msg.replace('\n', ' ')
-            print('> %s' % msg)
-            self._sock.send(bytes('PRIVMSG #%s :%s\r\n' % (MY_USERNAME, msg), 'utf-8'))
+            print(f'> {msg}')
+            self._sock.send(bytes(f'PRIVMSG #{MY_USERNAME} :{msg}\r\n', 'utf-8'))
         except socket.error as err:
-            print('Connection reset: %s' % err.strerror)
+            print(f'Connection reset: {err.strerror}')
 
     def action(self, msg):
-        self.say(msg if msg.startswith('/me ') else '/me %s' % msg)
+        self.say(msg if msg.startswith('/me ') else f'/me {msg}')
 
     # Commands
     def _send_pyramid(self, text, size=3):
@@ -112,9 +114,19 @@ class TwitchIRCHandler(object):
         else:
             self.action('Usage: !pyramid [<size>] <text>')
 
+    def send_random_emote(self):
+        if not self._ffz_emote_cache:
+            with requests.get(f'http://api.frankerfacez.com/v1/room/{MY_USERNAME}') as response:
+                data = response.json()
+            set_num = data['room']['set']
+            emoticons = data['sets'][str(set_num)]['emoticons']
+            self._ffz_emote_cache = [emote['name'] for emote in emoticons]
+        
+        self.say(random.choice(self._ffz_emote_cache))
+
     @staticmethod
     def _extract_username_message(line):
-        head, sep, message = line[line.find(':') + 1:].partition(':')
+        head, _, message = line[line.find(':') + 1:].partition(':')
         username = head[:head.find('!')]
         return username, message
 
@@ -139,18 +151,18 @@ class TwitchAPIHandler(object):
         timestamp = '{}:{:02}'.format(delta // 60 ** 2, delta // 60 % 60)
         with open('timestamps.txt', 'a') as ts_file:
             ts_file.write(timestamp + '\n')
-        irc_client.action('Timestamp saved! [%s]' % timestamp)
+        irc_client.action(f'Timestamp saved! [{timestamp}]')
 
 
 class JokeHandler(object):
 
     def __init__(self):
+        self._joke_cache = []
         self._reddit = praw.Reddit(client_id=REDDIT_CLIENT_ID,
                                    client_secret=SECRET,
                                    password=PASSWORD,
                                    user_agent=BOT_USERNAME,
                                    username=USERNAME)
-        self._joke_cache = []
 
     def _fetch_jokes(self):
         r_jokes = self._reddit.subreddit('jokes').top('week')
@@ -159,6 +171,5 @@ class JokeHandler(object):
     def random_joke(self):
         if not self._joke_cache:
             self._fetch_jokes()
-        joke = random.choice(self._joke_cache)
-        self._joke_cache.remove(joke)
+        joke = self._joke_cache.pop(random.randrange(len(self._joke_cache)))
         return ' '.join(joke).replace('\n', ' ')

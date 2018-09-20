@@ -1,11 +1,8 @@
-from handlers import TwitchIRCHandler, TwitchAPIHandler, JokeHandler
+from handlers import TwitchIRCHandler, TwitchAPIHandler, JokeHandler, BOT_USERNAME, MY_USERNAME
 import sys
 import requests
 import threading
 import random
-
-BOT_USERNAME = 'uncleronnybot'
-MY_USERNAME = 'uncleronny'
 
 
 def fetch_viewers(interval):
@@ -14,10 +11,12 @@ def fetch_viewers(interval):
     def loop():
         viewers = []
         while not stopped.wait(interval):
-            with requests.get('http://tmi.twitch.tv/group/user/%s/chatters' % MY_USERNAME) as response:
+
+            with requests.get(f'http://tmi.twitch.tv/group/user/{MY_USERNAME}/chatters') as response:
                 try:
                     data = response.json()
-                    new_viewers = [viewer for viewer in data['chatters']['viewers'] if viewer not in (MY_USERNAME, BOT_USERNAME)]
+                    new_viewers = [viewer for viewer in data['chatters']['viewers']
+                                   if viewer not in (MY_USERNAME, BOT_USERNAME)]
                     if new_viewers != viewers:
                         viewers = new_viewers
                         print('> Viewers: ' + ', '.join(viewers))
@@ -28,17 +27,12 @@ def fetch_viewers(interval):
     return stopped.set
 
 
-def send_random_emote(irc_client, interval):
+def send_random_emotes(irc_client, interval):
     stopped = threading.Event()
 
     def loop():
-        with requests.get('http://api.frankerfacez.com/v1/room/%s' % MY_USERNAME) as response:
-            data = response.json()
-        set = data['room']['set']
-        emoticons = data['sets'][str(set)]['emoticons']
-        emote_names = [emote['name'] for emote in emoticons]
         while not stopped.wait(interval):
-            irc_client.say(random.choice(emote_names))
+            irc_client.send_random_emote()
 
     threading.Thread(target=loop).start()
     return stopped.set
@@ -48,34 +42,34 @@ def now_playing(irc_client):
     if sys.argv[1:] and sys.argv[1] == '-m':
         with open(r'C:\Users\RonMad\Documents\foobar2000_now_playing\now_playing.txt',
                   encoding='utf-8-sig') as np_file:
-            irc_client.action('Now playing: %s' % np_file.readline())
+            irc_client.action(f'Now playing: {np_file.readline()}')
     else:
         irc_client.action('N/A')
 
 
 def main():
-
-    def cancel_repeating_threads():
-        if cancel_fetch_viewers:
-            cancel_fetch_viewers()
-        if cancel_send_random_emote:
-            cancel_send_random_emote()
-
     irc_client = TwitchIRCHandler()
     twitch_api_handler = TwitchAPIHandler()
     joke_handler = JokeHandler()
 
     cancel_fetch_viewers = None
-    cancel_send_random_emote = None
+    cancel_send_random_emotes = None
+
+    def cancel_repeating_threads():
+        if cancel_fetch_viewers:
+            cancel_fetch_viewers()
+        if cancel_send_random_emotes:
+            cancel_send_random_emotes()
 
     commands = {
         'PogChamp': lambda: irc_client.say('ChampPog'),
         'ChampPog': lambda: irc_client.say('PogChamp'),
-        '!help': lambda: irc_client.action('Commands: %s' % ' '.join(list(commands.keys())[3:])),
+        '!help': lambda: irc_client.action(f"Commands: {' '.join(list(commands.keys())[3:])}"),
         '!highlight': lambda: twitch_api_handler.command_highlight(irc_client),
         '!np': lambda: now_playing(irc_client),
         '!pyramid': lambda: irc_client.action('Usage: !pyramid [<size>] <text>'),
-        '!joke': lambda: irc_client.say(joke_handler.random_joke())
+        '!joke': lambda: irc_client.say(joke_handler.random_joke()),
+        '!emote': lambda: irc_client.send_random_emote()
     }
 
     def other_command(msg):
@@ -99,7 +93,7 @@ def main():
         return
 
     cancel_fetch_viewers = fetch_viewers(60)
-    cancel_send_random_emote = send_random_emote(irc_client, 60*10)
+    cancel_send_random_emotes = send_random_emotes(irc_client, 60*10)
 
     while True:
         messages = irc_client.get_messages()
@@ -107,7 +101,7 @@ def main():
             cancel_repeating_threads()
             return
         for username, message in messages:
-            print('%s: %s' % (username, message))
+            print(f'{username}: {message}')
             if username == BOT_USERNAME:
                 continue
             commands.get(message, lambda: other_command(message))()
