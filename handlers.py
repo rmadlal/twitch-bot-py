@@ -2,9 +2,12 @@ from twitch import TwitchClient
 from datetime import datetime
 import praw
 import socket
+import re
 import requests
 import random
 import json
+import subprocess
+import pyperclip
 
 with open('botconfig.json') as config_file:
     config = json.load(config_file)
@@ -37,6 +40,7 @@ class TwitchIRCHandler(object):
         self._ffz_emote_cache = []
 
     def connect(self):
+        re_end = re.compile(r'^:\w+\.tmi\.twitch\.tv 366 \w+ #\w+ :End of /NAMES list$')
         try:
             self._sock.connect((HOST, PORT))
             self._sock.send(bytes(f'PASS {PASS}\r\n', 'utf-8'))
@@ -50,33 +54,38 @@ class TwitchIRCHandler(object):
                         print('Connection error')
                         return False
                     print('Connection error, retrying')
-                    self.connect()
-                if 'End of /NAMES list' in received:
-                    print(f"Connected to {MY_USERNAME}'s Twitch chat.")
-                    return True
+                    return self.connect()
+
+                for line in received.splitlines():
+                    if re_end.match(line):
+                        print(f"Connected to {MY_USERNAME}'s Twitch chat.")
+                        return True
         except socket.error as err:
             self._retry_count -= 1
             if not self._retry_count:
                 print(f'Connection error: {err.strerror}')
                 return False
             print(f'Connection error: {err.strerror}. Retrying')
-            self.connect()
+            return self.connect()
 
     def disconnect(self):
         self._sock.close()
 
     def get_messages(self):
+        re_message = re.compile(r'^:(?P<user>\w+)!\1@\1\.tmi\.twitch\.tv PRIVMSG #\1 :(?P<message>.+)$')
         try:
             received = self._sock.recv(1024).decode()
             if not received:
                 print('Connection reset')
                 return
-            lines = received.split('\r\n')
-            messages = [line for line in lines if 'PRIVMSG' in line]
-            pings = [line for line in lines if 'PRIVMSG' not in line and 'PING' in line]
-            for _ in pings:
-                self._sock.send(bytes('PONG :tmi.twitch.tv\r\n', 'utf-8'))
-            return list(map(TwitchIRCHandler._extract_username_message, messages))
+            lines = received.splitlines()
+
+            # Ping-pong
+            pings = [line for line in lines if line == 'PING :tmi.twitch.tv']
+            for ping in pings:
+                self._sock.send(bytes(ping.replace('PING', 'PONG', 1) + '\r\n', 'utf-8'))
+
+            return [(m['user'], m['message']) for m in map(re_message.match, lines) if m]
         except socket.error as err:
             print(f'Connection reset: {err.strerror}')
             return
@@ -95,24 +104,28 @@ class TwitchIRCHandler(object):
     # Commands
     def _send_pyramid(self, text, size=3):
         if size not in range(1, 8):
-            self.action('Pyramid size must be between 1 to 7.')
+            self.action('Pyramid size must be between 1 and 7.')
             return
         for i in range(2 * size - 1):
             block = [text] * (i + 1 if i < size else 2 * size - (i + 1))
             self.say(' '.join(block))
 
     def command_pyramid(self, msg):
-        msg_parts = msg.split(' ')
-        msg_parts = list(filter(None, msg_parts[1:]))
-        if len(msg_parts) == 1 and msg_parts[0]:
-            self._send_pyramid(msg_parts[0])
-        elif len(msg_parts) > 1:
-            if msg_parts[0].isdigit():
-                self._send_pyramid(' '.join(msg_parts[1:]), int(msg_parts[0]))
-            else:
-                self._send_pyramid(' '.join(msg_parts))
-        else:
-            self.action('Usage: !pyramid [<size>] <text>')
+        part_cmd = r'!pyramid'
+        part_text = r'(?P<text>\S(.*\S)?)'
+        # !pyramid <text>
+        re_pyramid_def = re.compile(rf'^{part_cmd} +{part_text}.*$')
+        # !pyramid <size> <text>
+        re_pyramid_with_size = re.compile(rf'^{part_cmd} +(?P<size>\d+) +{part_text}.*$')
+
+        command = re_pyramid_with_size.match(msg) or re_pyramid_def.match(msg)
+        if command:
+            if 'size' in command.groupdict():
+                self._send_pyramid(command['text'], int(command['size']))
+                return
+            self._send_pyramid(command['text'])
+            return
+        self.action('Usage: !pyramid [<size>] <text>')
 
     def send_random_emote(self):
         if not self._ffz_emote_cache:
@@ -124,11 +137,23 @@ class TwitchIRCHandler(object):
         
         self.say(random.choice(self._ffz_emote_cache))
 
-    @staticmethod
-    def _extract_username_message(line):
-        head, _, message = line[line.find(':') + 1:].partition(':')
-        username = head[:head.find('!')]
-        return username, message
+    def now_playing(self):
+        FOOBAR2K = r'C:\Program Files (x86)\foobar2000\foobar2000.exe'
+        message = 'N/A'
+
+        # Verify that foobar2k is running.
+        tasks = subprocess.check_output(['tasklist', '/FO', 'CSV'], shell=True, universal_newlines=True)
+        tasks = [task.strip('\"') for task in [s.split(',')[0] for s in tasks.splitlines()]]
+        if 'foobar2000.exe' not in tasks:
+            self.action(message)
+            return
+
+        # Run a foobar2k command that copies the currently playing track to clipboard.
+        pyperclip.copy('')  # Clear clipboard first, so we can check for failure.
+        subprocess.run([r'C:\Program Files (x86)\foobar2000\foobar2000.exe', '/runcmd-playlist=Copy name'])
+        track = pyperclip.paste()
+        message = f'Now playing: {track}' if track else message
+        self.action(message)
 
 
 class TwitchAPIHandler(object):
@@ -146,12 +171,12 @@ class TwitchAPIHandler(object):
     def command_highlight(self, irc_client):
         stream = self._twitch_client.streams.get_stream_by_user(CHANNEL_ID)
         if not stream:
-            return
+            return ''
         delta = (datetime.utcnow() - stream['created_at']).seconds
         timestamp = '{}:{:02}'.format(delta // 60 ** 2, delta // 60 % 60)
         with open('timestamps.txt', 'a') as ts_file:
             ts_file.write(timestamp + '\n')
-        irc_client.action(f'Timestamp saved! [{timestamp}]')
+        return timestamp
 
 
 class JokeHandler(object):
