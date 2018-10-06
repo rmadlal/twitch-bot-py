@@ -1,13 +1,14 @@
-from twitch import TwitchClient
-from datetime import datetime
-import praw
-import socket
-import re
-import requests
-import random
 import json
+import random
+import re
+import socket
 import subprocess
+from datetime import datetime
+
 import pyperclip
+import requests
+from praw import Reddit
+from twitch import TwitchClient
 
 with open('botconfig.json') as config_file:
     config = json.load(config_file)
@@ -119,13 +120,13 @@ class TwitchIRCHandler(object):
         re_pyramid_with_size = re.compile(rf'^{part_cmd} +(?P<size>\d+) +{part_text}.*$')
 
         command = re_pyramid_with_size.match(msg) or re_pyramid_def.match(msg)
-        if command:
-            if 'size' in command.groupdict():
-                self._send_pyramid(command['text'], int(command['size']))
-                return
-            self._send_pyramid(command['text'])
+        if not command:
+            self.action('Usage: !pyramid [<size>] <text>')
             return
-        self.action('Usage: !pyramid [<size>] <text>')
+        if 'size' in command.groupdict():
+            self._send_pyramid(command['text'], int(command['size']))
+            return
+        self._send_pyramid(command['text'])
 
     def send_random_emote(self):
         if not self._ffz_emote_cache:
@@ -134,42 +135,42 @@ class TwitchIRCHandler(object):
             set_num = data['room']['set']
             emoticons = data['sets'][str(set_num)]['emoticons']
             self._ffz_emote_cache = [emote['name'] for emote in emoticons]
-        
+
         self.say(random.choice(self._ffz_emote_cache))
 
     def now_playing(self):
-        FOOBAR2K = r'C:\Program Files (x86)\foobar2000\foobar2000.exe'
+        foobar2k = r'C:\Program Files (x86)\foobar2000\foobar2000.exe'
         message = 'N/A'
 
         # Verify that foobar2k is running.
         tasks = subprocess.check_output(['tasklist', '/FO', 'CSV'], shell=True, universal_newlines=True)
-        tasks = [task.strip('\"') for task in [s.split(',')[0] for s in tasks.splitlines()]]
+        tasks = (s.split(',')[0] for s in tasks.splitlines())
         if 'foobar2000.exe' not in tasks:
             self.action(message)
             return
 
         # Run a foobar2k command that copies the currently playing track to clipboard.
         pyperclip.copy('')  # Clear clipboard first, so we can check for failure.
-        subprocess.run([r'C:\Program Files (x86)\foobar2000\foobar2000.exe', '/runcmd-playlist=Copy name'])
+        subprocess.run([foobar2k, '/runcmd-playlist=Copy name'])
         track = pyperclip.paste()
         message = f'Now playing: {track}' if track else message
         self.action(message)
 
 
-class TwitchAPIHandler(object):
+class TwitchAPIHandler(TwitchClient):
 
     def __init__(self):
-        self._twitch_client = TwitchClient(CLIENT_ID, API_TOKEN)
+        super(TwitchAPIHandler, self).__init__(CLIENT_ID, API_TOKEN)
 
     def update_game(self, game):
-        self._twitch_client.channels.update(CHANNEL_ID, game=game)
+        self.channels.update(CHANNEL_ID, game=game)
 
     def update_title(self, title):
-        self._twitch_client.channels.update(CHANNEL_ID, status=title)
+        self.channels.update(CHANNEL_ID, status=title)
 
     # Commands
-    def command_highlight(self, irc_client):
-        stream = self._twitch_client.streams.get_stream_by_user(CHANNEL_ID)
+    def command_highlight(self):
+        stream = self.streams.get_stream_by_user(CHANNEL_ID)
         if not stream:
             return ''
         delta = (datetime.utcnow() - stream['created_at']).seconds
@@ -183,11 +184,11 @@ class JokeHandler(object):
 
     def __init__(self):
         self._joke_cache = []
-        self._reddit = praw.Reddit(client_id=REDDIT_CLIENT_ID,
-                                   client_secret=SECRET,
-                                   password=PASSWORD,
-                                   user_agent=BOT_USERNAME,
-                                   username=USERNAME)
+        self._reddit = Reddit(client_id=REDDIT_CLIENT_ID,
+                              client_secret=SECRET,
+                              password=PASSWORD,
+                              user_agent=BOT_USERNAME,
+                              username=USERNAME)
 
     def _fetch_jokes(self):
         r_jokes = self._reddit.subreddit('jokes').top('week')

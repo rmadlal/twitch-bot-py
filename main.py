@@ -1,8 +1,7 @@
-from handlers import TwitchIRCHandler, TwitchAPIHandler, JokeHandler, BOT_USERNAME, MY_USERNAME
 import sys
-import requests
 import threading
-import random
+
+from handlers import *
 
 
 def fetch_viewers(interval):
@@ -15,7 +14,7 @@ def fetch_viewers(interval):
                 try:
                     data = response.json()
                     new_viewers = set([viewer for viewer in data['chatters']['viewers']
-                                      if viewer not in (MY_USERNAME, BOT_USERNAME)])
+                                       if viewer not in (MY_USERNAME, BOT_USERNAME)])
                     if new_viewers != viewers:
                         viewers = new_viewers
                         print('> Viewers: ' + ', '.join(viewers))
