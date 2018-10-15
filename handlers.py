@@ -39,9 +39,22 @@ class TwitchIRCHandler(object):
         self._sock = socket.socket()
         self._retry_count = 3
         self._ffz_emote_cache = []
+        self._init_regexes()
+
+    def _init_regexes(self):
+        self._re_end = re.compile(rf'^:\w+\.tmi\.twitch\.tv 366 \w+ #{MY_USERNAME} :End of /NAMES list$')
+        self._re_message = re.compile(rf'^:(?P<user>\w+)!\1@\1\.tmi\.twitch\.tv PRIVMSG #{MY_USERNAME} :(?P<message>.+)$')
+
+        # pyramid command
+        part_cmd = r'!pyramid'
+        part_text = r'(?P<text>\S(.*\S)?)'
+        # !pyramid <text>
+        self._re_pyramid_def = re.compile(rf'^{part_cmd} +{part_text}.*$')
+        # !pyramid <size> <text>
+        self._re_pyramid_with_size = re.compile(rf'^{part_cmd} +(?P<size>\d+) +{part_text}.*$')
+
 
     def connect(self):
-        re_end = re.compile(r'^:\w+\.tmi\.twitch\.tv 366 \w+ #\w+ :End of /NAMES list$')
         try:
             self._sock.connect((HOST, PORT))
             self._sock.send(bytes(f'PASS {PASS}\r\n', 'utf-8'))
@@ -58,7 +71,7 @@ class TwitchIRCHandler(object):
                     return self.connect()
 
                 for line in received.splitlines():
-                    if re_end.match(line):
+                    if self._re_end.match(line):
                         print(f"Connected to {MY_USERNAME}'s Twitch chat.")
                         return True
         except socket.error as err:
@@ -73,7 +86,6 @@ class TwitchIRCHandler(object):
         self._sock.close()
 
     def get_messages(self):
-        re_message = re.compile(r'^:(?P<user>\w+)!\1@\1\.tmi\.twitch\.tv PRIVMSG #\1 :(?P<message>.+)$')
         try:
             received = self._sock.recv(1024).decode()
             if not received:
@@ -86,7 +98,7 @@ class TwitchIRCHandler(object):
             for ping in pings:
                 self._sock.send(bytes(ping.replace('PING', 'PONG', 1) + '\r\n', 'utf-8'))
 
-            return [(m['user'], m['message']) for m in map(re_message.match, lines) if m]
+            return [(m['user'], m['message']) for m in map(self._re_message.match, lines) if m]
         except socket.error as err:
             print(f'Connection reset: {err.strerror}')
             return
@@ -112,14 +124,7 @@ class TwitchIRCHandler(object):
             self.say(' '.join(block))
 
     def command_pyramid(self, msg):
-        part_cmd = r'!pyramid'
-        part_text = r'(?P<text>\S(.*\S)?)'
-        # !pyramid <text>
-        re_pyramid_def = re.compile(rf'^{part_cmd} +{part_text}.*$')
-        # !pyramid <size> <text>
-        re_pyramid_with_size = re.compile(rf'^{part_cmd} +(?P<size>\d+) +{part_text}.*$')
-
-        command = re_pyramid_with_size.match(msg) or re_pyramid_def.match(msg)
+        command = self._re_pyramid_with_size.match(msg) or self._re_pyramid_def.match(msg)
         if not command:
             self.action('Usage: !pyramid [<size>] <text>')
             return
