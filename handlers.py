@@ -33,26 +33,29 @@ CLIENT_ID = config['clientID']
 API_TOKEN = config['botAPIOAuth']
 
 
+def pop_random_item(lst):
+    return lst.pop(random.randrange(len(lst)))
+
+
 class TwitchIRCHandler(object):
 
     def __init__(self):
         self._sock = socket.socket()
-        self._retry_count = 3
         self._ffz_emote_cache = []
         self._init_regexes()
 
     def _init_regexes(self):
-        self._re_end = re.compile(rf'^:\w+\.tmi\.twitch\.tv 366 \w+ #{MY_USERNAME} :End of /NAMES list$')
-        self._re_message = re.compile(rf'^:(?P<user>\w+)!\1@\1\.tmi\.twitch\.tv PRIVMSG #{MY_USERNAME} :(?P<message>.+)$')
+        self._re_end = re.compile(r'^:\w+\.tmi\.twitch\.tv 366 \w+ #(?P<channel_name>\w+) :End of /NAMES list$')
+        self._re_message = re.compile(r'^:(?P<user>\w+)!\1@\1\.tmi\.twitch\.tv '
+                                      rf'PRIVMSG #{MY_USERNAME} :(?P<message>.+)$')
 
-        # pyramid command
+        # Pyramid command
         part_cmd = r'!pyramid'
         part_text = r'(?P<text>\S(.*\S)?)'
         # !pyramid <text>
         self._re_pyramid_def = re.compile(rf'^{part_cmd} +{part_text}.*$')
         # !pyramid <size> <text>
         self._re_pyramid_with_size = re.compile(rf'^{part_cmd} +(?P<size>\d+) +{part_text}.*$')
-
 
     def connect(self):
         try:
@@ -63,24 +66,17 @@ class TwitchIRCHandler(object):
             while True:
                 received = self._sock.recv(1024).decode()
                 if not received:
-                    self._retry_count -= 1
-                    if not self._retry_count:
-                        print('Connection error')
-                        return False
-                    print('Connection error, retrying')
-                    return self.connect()
+                    print('Connection error')
+                    return False
 
                 for line in received.splitlines():
-                    if self._re_end.match(line):
-                        print(f"Connected to {MY_USERNAME}'s Twitch chat.")
+                    end_msg = self._re_end.match(line)
+                    if end_msg:
+                        print(f"Connected to {end_msg['channel_name']}'s Twitch chat.")
                         return True
         except socket.error as err:
-            self._retry_count -= 1
-            if not self._retry_count:
-                print(f'Connection error: {err.strerror}')
-                return False
-            print(f'Connection error: {err.strerror}. Retrying')
-            return self.connect()
+            print(f'Connection error: {err.strerror}')
+            return False
 
     def disconnect(self):
         self._sock.close()
@@ -106,8 +102,8 @@ class TwitchIRCHandler(object):
     def say(self, msg):
         try:
             msg = msg.replace('\n', ' ')
-            print(f'> {msg}')
             self._sock.send(bytes(f'PRIVMSG #{MY_USERNAME} :{msg}\r\n', 'utf-8'))
+            print(f'> {msg}')
         except socket.error as err:
             print(f'Connection reset: {err.strerror}')
 
@@ -123,17 +119,17 @@ class TwitchIRCHandler(object):
             block = [text] * (i + 1 if i < size else 2 * size - (i + 1))
             self.say(' '.join(block))
 
-    def command_pyramid(self, msg):
+    def pyramid(self, msg):
         command = self._re_pyramid_with_size.match(msg) or self._re_pyramid_def.match(msg)
         if not command:
             self.action('Usage: !pyramid [<size>] <text>')
             return
-        if 'size' in command.groupdict():
+        if 'size' in command.groupdict():   # Pyramid size was specified
             self._send_pyramid(command['text'], int(command['size']))
             return
         self._send_pyramid(command['text'])
 
-    def send_random_emote(self):
+    def random_emote(self):
         if not self._ffz_emote_cache:
             with requests.get(f'http://api.frankerfacez.com/v1/room/{MY_USERNAME}') as response:
                 data = response.json()
@@ -147,17 +143,19 @@ class TwitchIRCHandler(object):
         foobar2k = r'C:\Program Files (x86)\foobar2000\foobar2000.exe'
         message = 'N/A'
 
-        # Verify that foobar2k is running.
+        # Verify that foobar2k is running
         tasks = subprocess.check_output(['tasklist', '/FO', 'CSV'], shell=True, universal_newlines=True)
         tasks = (s.split(',')[0] for s in tasks.splitlines())
-        if 'foobar2000.exe' not in tasks:
+        if '"foobar2000.exe"' not in tasks:
             self.action(message)
             return
 
-        # Run a foobar2k command that copies the currently playing track to clipboard.
-        pyperclip.copy('')  # Clear clipboard first, so we can check for failure.
+        # Run a foobar2k command that copies the currently playing track to clipboard
+        prev_clip = pyperclip.paste()   # Save current clipboard content to restore later
+        pyperclip.copy('')              # Clear clipboard first, so we can check for failure
         subprocess.run([foobar2k, '/runcmd-playlist=Copy name'])
         track = pyperclip.paste()
+        pyperclip.copy(prev_clip)
         message = f'Now playing: {track}' if track else message
         self.action(message)
 
@@ -166,6 +164,7 @@ class TwitchAPIHandler(TwitchClient):
 
     def __init__(self):
         super(TwitchAPIHandler, self).__init__(CLIENT_ID, API_TOKEN)
+        self._clip_cache = []
 
     def update_game(self, game):
         self.channels.update(CHANNEL_ID, game=game)
@@ -174,15 +173,24 @@ class TwitchAPIHandler(TwitchClient):
         self.channels.update(CHANNEL_ID, status=title)
 
     # Commands
-    def command_highlight(self):
+    def highlight(self):
         stream = self.streams.get_stream_by_user(CHANNEL_ID)
         if not stream:
-            return ''
+            return 'Unexpected error'
         delta = (datetime.utcnow() - stream['created_at']).seconds
         timestamp = '{}:{:02}'.format(delta // 60 ** 2, delta // 60 % 60)
         with open('timestamps.txt', 'a') as ts_file:
             ts_file.write(timestamp + '\n')
-        return timestamp
+        return f'Timestamp saved! [{timestamp}]'
+
+    def random_clip(self):
+        if not self._clip_cache:
+            try:
+                self._clip_cache = self.clips.get_top(channel=MY_USERNAME, limit=50, period='all')
+            except requests.RequestException:
+                return 'Unexpected error'
+        clip = pop_random_item(self._clip_cache)
+        return clip['url']
 
 
 class JokeHandler(object):
@@ -199,8 +207,9 @@ class JokeHandler(object):
         r_jokes = self._reddit.subreddit('jokes').top('week')
         self._joke_cache = [(joke.title, joke.selftext) for joke in r_jokes if len(joke.selftext) < 150]
 
+    # Commands
     def random_joke(self):
         if not self._joke_cache:
             self._fetch_jokes()
-        joke = self._joke_cache.pop(random.randrange(len(self._joke_cache)))
+        joke = pop_random_item(self._joke_cache)
         return ' '.join(joke).replace('\n', ' ')

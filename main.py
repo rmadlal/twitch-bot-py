@@ -1,7 +1,9 @@
 import sys
 import threading
 
-from handlers import *
+import requests
+
+from handlers import MY_USERNAME, BOT_USERNAME, TwitchIRCHandler, TwitchAPIHandler, JokeHandler
 
 
 def fetch_viewers(interval):
@@ -12,13 +14,14 @@ def fetch_viewers(interval):
         while not stopped.wait(interval):
             with requests.get(f'http://tmi.twitch.tv/group/user/{MY_USERNAME}/chatters') as response:
                 try:
+                    response.raise_for_status()
                     data = response.json()
-                    new_viewers = set([viewer for viewer in data['chatters']['viewers']
-                                       if viewer not in (MY_USERNAME, BOT_USERNAME)])
+                    new_viewers = set((viewer for viewer in data['chatters']['viewers']
+                                       if viewer not in (MY_USERNAME, BOT_USERNAME)))
                     if new_viewers != viewers:
                         viewers = new_viewers
                         print('> Viewers: ' + ', '.join(viewers))
-                except:
+                except requests.RequestException:
                     continue
 
     threading.Thread(target=loop).start()
@@ -30,7 +33,7 @@ def send_random_emotes(irc_client, interval):
 
     def loop():
         while not stopped.wait(interval):
-            irc_client.send_random_emote()
+            irc_client.random_emote()
 
     threading.Thread(target=loop).start()
     return stopped.set
@@ -41,33 +44,35 @@ def main():
     twitch_api_handler = TwitchAPIHandler()
     joke_handler = JokeHandler()
 
-    cancel_fetch_viewers = None
-    cancel_send_random_emotes = None
+    cancel_fetch_viewers = fetch_viewers(60)
+    cancel_send_random_emotes = send_random_emotes(irc_client, 60*10)
 
     def cancel_repeating_threads():
-        if cancel_fetch_viewers:
-            cancel_fetch_viewers()
-        if cancel_send_random_emotes:
-            cancel_send_random_emotes()
+        cancel_fetch_viewers()
+        cancel_send_random_emotes()
 
     commands = {
         'PogChamp': lambda: irc_client.say('ChampPog'),
         'ChampPog': lambda: irc_client.say('PogChamp'),
         '!help': lambda: irc_client.action(f"Commands: {' '.join(list(commands.keys())[3:])}"),
-        '!highlight': lambda: irc_client.action(f'Timestamp saved! [{twitch_api_handler.command_highlight()}]'),
+        '!highlight': lambda: irc_client.action(twitch_api_handler.highlight()),
         '!np': lambda: irc_client.now_playing(),
         '!pyramid': lambda: irc_client.action('Usage: !pyramid [<size>] <text>'),
         '!joke': lambda: irc_client.say(joke_handler.random_joke()),
-        '!emote': lambda: irc_client.send_random_emote()
+        '!emote': lambda: irc_client.random_emote(),
+        '!clip': lambda: irc_client.action(twitch_api_handler.random_clip())
     }
 
     def other_command(msg):
+        # Commands with arguments (e.g !pyramid) and owner-only commands are handled here
         if msg.startswith('!pyramid '):
-            irc_client.command_pyramid(msg)
-        elif msg.startswith('!'):
-            commands['!help']()
-        elif username != MY_USERNAME:
+            irc_client.pyramid(msg)
             return
+        if username != MY_USERNAME:
+            if msg.startswith('!'):
+                commands['!help']()
+            return
+        # Channel owner only
         if msg.startswith('!game '):
             twitch_api_handler.update_game(msg[len('!game '):])
         elif msg.startswith('!title '):
@@ -81,9 +86,6 @@ def main():
     if not irc_client.connect():
         cancel_repeating_threads()
         return
-
-    cancel_fetch_viewers = fetch_viewers(60)
-    cancel_send_random_emotes = send_random_emotes(irc_client, 60*10)
 
     while True:
         messages = irc_client.get_messages()
