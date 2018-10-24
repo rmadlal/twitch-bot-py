@@ -117,7 +117,7 @@ class TwitchAPIHandler(TwitchClient):
     def highlight(self):
         stream = self.streams.get_stream_by_user(CHANNEL_ID)
         if not stream:
-            return ''
+            raise IOError
         delta = (datetime.utcnow() - stream['created_at']).seconds
         timestamp = '{}:{:02}'.format(delta // 60 ** 2, delta // 60 % 60)
         with open('timestamps.txt', 'a') as ts_file:
@@ -160,22 +160,29 @@ class CommandHandler(object):
         self._twitch_api_handler = TwitchAPIHandler()
         self._joke_handler = JokeHandler()
         self._ffz_emote_cache = []
-        self._re = re.compile(r'^!(?P<cmd>\w+)(?P<args>( +\S+)*)')
+        self._re = re.compile(r'^!(?P<cmd>\w+)( +(?P<args>\S.*))?')
+        self._champ = ('PogChamp', 'ChampPog')
 
     def __call__(self, msg: str):
+        if msg in self._champ:
+            self._irc_client.say(self._champ[1 - self._champ.index(msg)])
+            return
         m = self._re.match(msg)
         if not m:
             return
-        cmd, args = m['cmd'], m['args'].split()
+        cmd, args = m['cmd'], m['args'] or ''
         method = getattr(self, 'cmd_' + cmd, self.cmd_help)
         try:
-            method(*self._parse_args_for_method(method, *args))
+            method(*self._parse_args_for_method(method, args))
         except ValueError as e:
             self._irc_client.action(str(e))
+        except IOError:
+            self._irc_client.action('Unexpected error')
 
-    def _parse_args_for_method(self, method, *args) -> Tuple:
+    def _parse_args_for_method(self, method, args: str) -> Tuple:
         if method in (self.cmd_game, self.cmd_title):
-            return ' '.join(args),
+            return args,
+        args = tuple(args.split())
         if method == self.cmd_pyramid:
             return self._parse_pyramid_args(*args)
         return args
@@ -192,7 +199,7 @@ class CommandHandler(object):
 
     def cmd_highlight(self):
         timestamp = self._twitch_api_handler.highlight()
-        self._irc_client.action(f'Timestamp saved! [{timestamp}]' if timestamp else 'Unexpected error')
+        self._irc_client.action(f'Timestamp saved! [{timestamp}]')
 
     def cmd_np(self):
         foobar2k = r'C:\Program Files (x86)\foobar2000\foobar2000.exe'
@@ -218,24 +225,17 @@ class CommandHandler(object):
 
     def cmd_emote(self):
         if not self._ffz_emote_cache:
-            try:
-                with requests.get(f'http://api.frankerfacez.com/v1/room/{MY_USERNAME}') as response:
-                    response.raise_for_status()
-                    data = response.json()
-                set_num = data['room']['set']
-                emoticons = data['sets'][str(set_num)]['emoticons']
-                self._ffz_emote_cache = [emote['name'] for emote in emoticons]
-            except requests.RequestException:
-                self._irc_client.action('Unexpected error')
-
+            with requests.get(f'http://api.frankerfacez.com/v1/room/{MY_USERNAME}') as response:
+                response.raise_for_status()
+                data = response.json()
+            set_num = data['room']['set']
+            emoticons = data['sets'][str(set_num)]['emoticons']
+            self._ffz_emote_cache = [emote['name'] for emote in emoticons]
         self._irc_client.say(random.choice(self._ffz_emote_cache))
 
     def cmd_clip(self):
-        try:
-            clip = self._twitch_api_handler.random_clip()
-            self._irc_client.say(clip)
-        except requests.RequestException:
-            self._irc_client.action('Unexpected error')
+        clip = self._twitch_api_handler.random_clip()
+        self._irc_client.say(clip)
 
     def cmd_pyramid(self, text, size):
         pyramid = [' '.join([text] * (i + 1 if i < size else 2 * size - (i + 1)))
