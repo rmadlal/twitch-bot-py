@@ -171,16 +171,27 @@ class CommandHandler(object):
         if not m:
             return
         cmd, args = m['cmd'], m['args'] or ''
-        method = getattr(self, 'cmd_' + cmd, self.cmd_help)
         try:
+            method = getattr(self, 'cmd_' + cmd)
             method(*self._parse_args_for_method(method, args))
-        except ValueError as e:
+        except AttributeError:
+            # Unknown command, show help instead
+            self.cmd_help()
+        except TypeError:
+            # Invalid number of arguments for command
+            pass
+        except CommandError as e:
+            # Invalid arguments for command
             self._irc_client.action(str(e))
         except IOError:
+            # Something went wrong in some HTTP request
             self._irc_client.action('Unexpected error')
 
     def _parse_args_for_method(self, method, args: str) -> Tuple:
         if method in (self.cmd_game, self.cmd_title):
+            if not args:
+                method_str = self._cmd_method_to_str(method.__name__)
+                raise CommandError(f'Usage: {method_str} <text>')
             return args,
         args = tuple(args.split())
         if method == self.cmd_pyramid:
@@ -188,7 +199,7 @@ class CommandHandler(object):
         return args
 
     def cmd_help(self):
-        cmd_list = ['!' + m[4:] for m in dir(self) if m.startswith('cmd_')]
+        cmd_list = [self._cmd_method_to_str(m) for m in dir(self) if m.startswith('cmd_')]
         self._irc_client.action(f"Commands: {', '.join(cmd_list)}")
 
     def cmd_game(self, game: str):
@@ -248,12 +259,22 @@ class CommandHandler(object):
         # !pyramid <size: number from 1 to 7> <text: string>
         # or !pyramid <text: string> (in this case, the pyramid will be of size 3)
         if not args:
-            raise ValueError('Usage: !pyramid [<size>] <text>')
+            raise CommandError('Usage: !pyramid [<size>] <text>')
         size = 3
         if len(args) > 1 and str(args[0]).isnumeric():
             size = int(args[0])
             if size not in range(1, 8):
-                raise ValueError('Pyramid size must be between 1 and 7.')
+                raise CommandError('Pyramid size must be between 1 and 7.')
             args = args[1:]
         text = ' '.join(args)
         return text, size
+
+    @staticmethod
+    def _cmd_method_to_str(method_name):
+        # Example: 'cmd_help' becomes '!help'
+        return re.sub(r'cmd_(?P<cmd>\w+)', r'!\1', method_name)
+
+
+class CommandError(ValueError):
+    def __init__(self, *args, **kwargs):
+        super(CommandError, self).__init__(*args, **kwargs)
