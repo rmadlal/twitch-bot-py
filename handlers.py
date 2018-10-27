@@ -11,6 +11,8 @@ import requests
 from praw import Reddit
 from twitch import TwitchClient
 
+from util import pop_random_item
+
 with open('botconfig.json') as config_file:
     config = json.load(config_file)
 
@@ -32,10 +34,6 @@ PASSWORD = config['redditPassword']
 CHANNEL_ID = config['myChannelID']
 CLIENT_ID = config['clientID']
 API_TOKEN = config['botAPIOAuth']
-
-
-def pop_random_item(lst):
-    return lst.pop(random.randrange(len(lst)))
 
 
 class TwitchIRCHandler(object):
@@ -248,10 +246,11 @@ class CommandHandler(object):
         clip = self._twitch_api_handler.random_clip()
         self._irc_client.say(clip)
 
-    def cmd_pyramid(self, text, size):
-        pyramid = [' '.join([text] * (i + 1 if i < size else 2 * size - (i + 1)))
-                   for i in range(2 * size - 1)]
-        for block in pyramid:
+    def cmd_pyramid(self, text: str, size: int):
+        pyramid_base = [' '.join([text] * (i + 1)) for i in range(size)]
+        for block in pyramid_base:
+            self._irc_client.say(block)
+        for block in pyramid_base[-2::-1]:
             self._irc_client.say(block)
 
     @staticmethod

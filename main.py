@@ -1,52 +1,41 @@
-import threading
-
 import requests
 
 from handlers import MY_USERNAME, BOT_USERNAME, TwitchIRCHandler, CommandHandler
+from util import repeat_every
+
+viewers = set()  # Needs to be global to work with the `repeat` decorator
 
 
-def fetch_viewers(interval: float):
-    stopped = threading.Event()
-
-    def loop():
-        viewers = set()
-        while not stopped.wait(interval):
-            try:
-                with requests.get(f'http://tmi.twitch.tv/group/user/{MY_USERNAME}/chatters') as response:
-                    response.raise_for_status()
-                    data = response.json()
-                new_viewers = set((viewer for viewer in data['chatters']['viewers']
-                                   if viewer not in (MY_USERNAME, BOT_USERNAME)))
-                if new_viewers != viewers:
-                    viewers = new_viewers
-                    print('> Viewers: ' + ', '.join(viewers))
-            except requests.RequestException:
-                continue
-
-    threading.Thread(target=loop).start()
-    return stopped.set
+@repeat_every(60)
+def fetch_viewers():
+    global viewers
+    try:
+        with requests.get(f'http://tmi.twitch.tv/group/user/{MY_USERNAME}/chatters') as response:
+            response.raise_for_status()
+            data = response.json()
+        new_viewers = set((viewer for viewer in data['chatters']['viewers']
+                           if viewer not in (MY_USERNAME, BOT_USERNAME)))
+        if new_viewers != viewers:
+            viewers = new_viewers
+            print('> Viewers: ' + ', '.join(viewers))
+    except requests.RequestException:
+        pass
 
 
-def send_random_emotes(command_handler: CommandHandler, interval: float):
-    stopped = threading.Event()
-
-    def loop():
-        while not stopped.wait(interval):
-            try:
-                command_handler.cmd_emote()
-            except IOError:
-                pass
-
-    threading.Thread(target=loop).start()
-    return stopped.set
+@repeat_every(60 * 10)
+def send_random_emotes(command_handler: CommandHandler):
+    try:
+        command_handler.cmd_emote()
+    except IOError:
+        pass
 
 
 def main():
     irc_client = TwitchIRCHandler()
     command_handler = CommandHandler(irc_client)
 
-    cancel_fetch_viewers = fetch_viewers(60)
-    cancel_send_random_emotes = send_random_emotes(command_handler, 60*10)
+    cancel_fetch_viewers = fetch_viewers()
+    cancel_send_random_emotes = send_random_emotes(command_handler)
 
     def cancel_repeating_threads():
         cancel_fetch_viewers()
