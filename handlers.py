@@ -28,7 +28,7 @@ class TwitchIRCHandler:
 
     def connect(self):
         self._sock.connect((HOST, PORT))
-        self._sock.send(bytes(f'PASS {PASS}\r\n', 'utf-8'))
+        self._sock.send(bytes(f'PASS oauth:{PASS}\r\n', 'utf-8'))
         self._sock.send(bytes(f'NICK {BOT_USERNAME}\r\n', 'utf-8'))
         self._sock.send(bytes(f'JOIN #{MY_USERNAME}\r\n', 'utf-8'))
         while received := self._sock.recv(1024).decode():
