@@ -31,9 +31,7 @@ class Bot:
             for user, message in self._irc_handler.get_messages():
                 if user == BOT_USERNAME:
                     continue
-                self._command_handler(message, user)
-                if self._command_handler.should_exit:
-                    break
+                self._command_handler(message)
 
 
 def main():
@@ -41,9 +39,8 @@ def main():
         try:
             with Bot() as bot:
                 bot.main_loop()
-            sys.exit()
         except Exception as e:
-            print(f'{e!r}', file=sys.stderr)
+            print(repr(e), file=sys.stderr)
             time.sleep(10)
 
 

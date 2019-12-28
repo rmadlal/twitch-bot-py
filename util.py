@@ -1,13 +1,4 @@
-import random
 import threading
-from typing import List, TypeVar
-
-T = TypeVar('T')
-
-
-# Removes and returns a random item from a list
-def pop_random_item(lst: List[T]) -> T:
-    return lst.pop(random.randrange(len(lst)))
 
 
 # Decorator for repeating a function every `interval` seconds
@@ -34,5 +25,7 @@ class swallow_exceptions:
         pass
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if not exc_type:
+            return
         print(f'Suppressed exception: {exc_type.__name__}({exc_val})')
         return True
