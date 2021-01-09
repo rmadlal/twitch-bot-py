@@ -4,3 +4,4 @@ __pycache__/
 botconfig.json
 handlers_local.py
 test.py
+*.sh

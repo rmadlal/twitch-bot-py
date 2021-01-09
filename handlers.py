@@ -74,12 +74,8 @@ class CommandHandler:
         self._re_cmd_call: Final = re.compile(r'!(?P<cmd>\w+)( +(?P<args>\S.*))?')
         self._re_cmd_method: Final = re.compile(r'cmd_(\w+)')
         self._cmd_list: Final = [self._cmd_method_to_str(m) for m in dir(self) if m.startswith('cmd_')]
-        self._champ: Final = 'PogChamp', 'ChampPog'
 
     def __call__(self, message: str):
-        if message in self._champ:
-            self._irc_client.say(self._champ[1 - self._champ.index(message)])
-            return
         if not (m := self._re_cmd_call.match(message)):
             return
         cmd, args = m['cmd'], m['args'] or ''
