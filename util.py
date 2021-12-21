@@ -17,15 +17,3 @@ def repeat_every(interval: float):
         return inner
 
     return wrapper
-
-
-class swallow_exceptions:
-
-    def __enter__(self):
-        pass
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if not exc_type:
-            return
-        print(f'Suppressed exception: {exc_type.__name__}({exc_val})')
-        return True

@@ -3,8 +3,10 @@ import random
 import re
 import requests
 import socket
+import sys
 from collections import namedtuple
-from typing import Callable, Final, Iterable, Tuple
+from enum import Enum, auto
+from typing import Callable, Final, Iterable, Optional, Tuple, Union
 
 ChatMessage = namedtuple('ChatMessage', ['user', 'message'])
 
@@ -15,6 +17,13 @@ MY_USERNAME: Final = os.getenv('CHANNEL_NAME')
 HOST: Final = 'irc.chat.twitch.tv'
 PORT: Final = 6667
 PASS: Final = os.getenv('CHAT_OAUTH')
+
+# Twitch API
+USER_ID: Final = os.getenv('USER_ID')
+API_CLIENT_ID: Final = os.getenv('API_CLIENT_ID')
+API_OAUTH: Final = os.getenv('API_OAUTH')
+API_AUTH_HEADERS: Final = {'Authorization': f'Bearer {API_OAUTH}', 'Client-Id': API_CLIENT_ID}
+API_URL_BASE: Final = 'https://api.twitch.tv/helix'
 
 
 class TwitchIRCHandler:
@@ -66,38 +75,80 @@ class CommandError(ValueError):
     pass
 
 
+class CommandArgsFormat(Enum):
+    IGNORE = auto()
+    AS_IS = auto()
+    SPLIT = auto()
+
+
+class Command:
+
+    command_handler: Optional['CommandHandler'] = None
+
+    def __init__(self, cmd: Callable, private: bool, args_format: Union[Callable, CommandArgsFormat]):
+        self.__cmd = cmd
+        self.__private = private
+        self.__args_format = args_format
+
+    def __call__(self, rest: str = ''):
+        args = tuple()
+        if self.__args_format == CommandArgsFormat.IGNORE:
+            pass
+        if self.__args_format == CommandArgsFormat.AS_IS:
+            args = (rest,) if rest else tuple()
+        elif self.__args_format == CommandArgsFormat.SPLIT:
+            args = tuple(rest.split())
+        elif callable(self.__args_format):
+            args = self.__args_format(rest)
+
+        return self.__cmd(type(self).command_handler, *args)
+
+    @property
+    def is_private(self) -> bool:
+        return self.__private
+
+
 class CommandHandler:
 
     def __init__(self, _irc_client: TwitchIRCHandler):
         self._irc_client = _irc_client
         self._ffz_emote_cache = []
-        self._re_cmd_call: Final = re.compile(r'!(?P<cmd>\w+)( +(?P<args>\S.*))?')
-        self._re_cmd_method: Final = re.compile(r'cmd_(\w+)')
-        self._cmd_list: Final = [self._cmd_method_to_str(m) for m in dir(self) if m.startswith('cmd_')]
+        self._re_cmd_call: Final = re.compile(r'!(?P<cmd>\w+)( +(?P<rest>\S.*))?')
+        Command.command_handler = self
 
-    def __call__(self, message: str):
-        if not (m := self._re_cmd_call.match(message)):
+    def __call__(self, user: str, message: str):
+        if user == BOT_USERNAME or not (m := self._re_cmd_call.match(message)):
             return
-        cmd, args = m['cmd'], m['args'] or ''
-        try:
-            method = getattr(self, 'cmd_' + cmd)
-            method(*self._parse_args_for_method(method, args))
-        except AttributeError:
+
+        cmd, rest = m['cmd'], m['rest'] or ''
+        cmd_method = getattr(self, cmd, None)
+        if not (cmd_method or isinstance(cmd_method, Command)):
             # Unknown command, show help instead
-            self.cmd_help()
-        except TypeError:
-            # Invalid number of arguments for command
-            pass
+            self.help()
+            return
+
+        try:
+            if not cmd_method.is_private or user == MY_USERNAME:
+                cmd_method(rest)
         except CommandError as e:
             # Invalid arguments for command
             self._irc_client.action(str(e))
-        except Exception:
-            raise
+
+    # decorator
+    def command(cmd_method = None, private: bool = False, args_format: Union[CommandArgsFormat, Callable] = CommandArgsFormat.IGNORE):
+        if cmd_method:
+            # decorator without arguments
+            return Command(cmd_method, private, args_format)
+        else:
+            def wrapper(cmd_method):
+                return Command(cmd_method, private, args_format)
+            return wrapper
 
     @staticmethod
-    def _parse_pyramid_args(*args: str) -> Tuple[str, int]:
+    def _parse_pyramid_args(args: str) -> Tuple[str, int]:
         # !pyramid <size: number from 1 to 7> <text: string>
         # or !pyramid <text: string> (in this case, the pyramid will be of size 3)
+        args = args.split()
         if not args:
             raise CommandError('Usage: !pyramid [<size>] <text>')
         size = 3
@@ -109,20 +160,12 @@ class CommandHandler:
         text = ' '.join(args)
         return text, size
 
-    def _cmd_method_to_str(self, method_name: str) -> str:
-        # Example: 'cmd_help' becomes '!help'
-        return self._re_cmd_method.sub(r'!\1', method_name)
+    @command
+    def help(self):
+        self._irc_client.action('Commands: ' + ', '.join(f'!{cmd}' for cmd in dir(self) if isinstance(getattr(self, cmd), Command)))
 
-    def _parse_args_for_method(self, method: Callable, args: str) -> Tuple:
-        args = tuple(args.split())
-        if method == self.cmd_pyramid:
-            return self._parse_pyramid_args(*args)
-        return args
-
-    def cmd_help(self):
-        self._irc_client.action(f"Commands: {', '.join(self._cmd_list)}")
-
-    def cmd_emote(self):
+    @command
+    def emote(self):
         if not self._ffz_emote_cache:
             with requests.get(f'http://api.frankerfacez.com/v1/room/{MY_USERNAME}') as response:
                 response.raise_for_status()
@@ -132,6 +175,39 @@ class CommandHandler:
             self._ffz_emote_cache = [emote['name'] for emote in emoticons]
         self._irc_client.say(random.choice(self._ffz_emote_cache))
 
-    def cmd_pyramid(self, text: str, size: int):
+    @command(args_format=_parse_pyramid_args)
+    def pyramid(self, text: str, size: int):
         for i in range(1, size * 2):
             self._irc_client.say(' '.join([text] * (i if i <= size else 2 * size - i)))
+
+    @command(args_format=CommandArgsFormat.AS_IS)
+    def title(self, title: str):
+        with requests.patch(f'{API_URL_BASE}/channels',
+                            params={'broadcaster_id': USER_ID},
+                            headers=dict(**API_AUTH_HEADERS, **{'Content-Type': 'application/json'}),
+                            json={'title': title}) as resp:
+            if not resp.ok:
+                print(f'{resp.status_code = } {resp.reason = }', file=sys.stderr)
+                raise CommandError('Faild to change title')
+
+    @command(args_format=CommandArgsFormat.AS_IS)
+    def game(self, game: str):
+        # lookup game ID first
+        with requests.get(f'{API_URL_BASE}/games',
+                          params={'name': game},
+                          headers=API_AUTH_HEADERS) as resp:
+            if not resp.ok:
+                print(f'{resp.status_code = } {resp.reason = }', file=sys.stderr)
+                raise CommandError('Failed to change game')
+
+        games = resp.json()['data']
+        if not games:
+            raise CommandError('Game not found')
+
+        with requests.patch(f'{API_URL_BASE}/channels',
+                            params={'broadcaster_id': USER_ID},
+                            headers=dict(**API_AUTH_HEADERS, **{'Content-Type': 'application/json'}),
+                            json={'game_id': games[0]['id']}) as resp:
+            if not resp.ok:
+                print(f'{resp.status_code = } {resp.reason = }', file=sys.stderr)
+                raise CommandError('Failed to change game')
