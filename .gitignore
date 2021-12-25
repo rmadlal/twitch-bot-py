@@ -5,3 +5,4 @@ botconfig.json
 handlers_local.py
 test.py
 *.sh
+.env

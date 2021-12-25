@@ -4,11 +4,9 @@ import re
 import requests
 import socket
 import sys
-from collections import namedtuple
+from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Callable, Final, Iterable, Optional, Tuple, Union
-
-ChatMessage = namedtuple('ChatMessage', ['user', 'message'])
+from typing import Callable, Final, Iterable, Optional, Union
 
 BOT_USERNAME: Final = os.getenv('BOT_CHANNEL_NAME')
 MY_USERNAME: Final = os.getenv('CHANNEL_NAME')
@@ -26,19 +24,31 @@ API_AUTH_HEADERS: Final = {'Authorization': f'Bearer {API_OAUTH}', 'Client-Id': 
 API_URL_BASE: Final = 'https://api.twitch.tv/helix'
 
 
+@dataclass
+class ChatMessage:
+    user: str
+    message: str
+    user_type: Optional[str]
+
+    @property
+    def is_mod(self):
+        return self.user_type == 'mod' or self.user == MY_USERNAME
+
+
 class TwitchIRCHandler:
 
     def __init__(self):
         self._sock = socket.socket()
         self._ffz_emote_cache = []
         self._re_end = re.compile(r'^:\w+\.tmi\.twitch\.tv 366 \w+ #(?P<channel_name>\w+) :End of /NAMES list$')
-        self._re_message = re.compile(r'^:(?P<user>\w+)!\1@\1\.tmi\.twitch\.tv '
+        self._re_message = re.compile(r'^@\S*user-type=(?P<user_type>\w+)?\S* :(?P<user>\w+)!\2@\2\.tmi\.twitch\.tv '
                                       rf'PRIVMSG #{MY_USERNAME} :(?P<message>.+)$')
 
     def connect(self):
         self._sock.connect((HOST, PORT))
         self._sock.send(bytes(f'PASS oauth:{PASS}\r\n', 'utf-8'))
         self._sock.send(bytes(f'NICK {BOT_USERNAME}\r\n', 'utf-8'))
+        self._sock.send(bytes('CAP REQ :twitch.tv/tags\r\n', 'utf-8'))  # request tags for user-type
         self._sock.send(bytes(f'JOIN #{MY_USERNAME}\r\n', 'utf-8'))
         while received := self._sock.recv(1024).decode():
             for line in received.splitlines():
@@ -85,9 +95,9 @@ class Command:
 
     command_handler: Optional['CommandHandler'] = None
 
-    def __init__(self, cmd: Callable, private: bool, args_format: Union[Callable, CommandArgsFormat]):
+    def __init__(self, cmd: Callable, mod_only: bool, args_format: Union[Callable, CommandArgsFormat]):
         self.__cmd = cmd
-        self.__private = private
+        self.__mod_only = mod_only
         self.__args_format = args_format
 
     def __call__(self, rest: str = ''):
@@ -104,8 +114,8 @@ class Command:
         return self.__cmd(type(self).command_handler, *args)
 
     @property
-    def is_private(self) -> bool:
-        return self.__private
+    def is_mod_only(self) -> bool:
+        return self.__mod_only
 
 
 class CommandHandler:
@@ -114,10 +124,12 @@ class CommandHandler:
         self._irc_client = _irc_client
         self._ffz_emote_cache = []
         self._re_cmd_call: Final = re.compile(r'!(?P<cmd>\w+)( +(?P<rest>\S.*))?')
+        self._cmd_list: Final = [f'!{cmd_name} (mod only)' if cmd.is_mod_only else f'!{cmd_name}'
+                                 for cmd_name in dir(self) if isinstance(cmd := getattr(self, cmd_name), Command)]
         Command.command_handler = self
 
-    def __call__(self, user: str, message: str):
-        if user == BOT_USERNAME or not (m := self._re_cmd_call.match(message)):
+    def __call__(self, message: ChatMessage):
+        if message.user == BOT_USERNAME or not (m := self._re_cmd_call.match(message.message)):
             return
 
         cmd, rest = m['cmd'], m['rest'] or ''
@@ -128,24 +140,23 @@ class CommandHandler:
             return
 
         try:
-            if not cmd_method.is_private or user == MY_USERNAME:
+            if not cmd_method.is_mod_only or message.is_mod:
                 cmd_method(rest)
         except CommandError as e:
-            # Invalid arguments for command
             self._irc_client.action(str(e))
 
     # decorator
-    def command(cmd_method = None, private: bool = False, args_format: Union[CommandArgsFormat, Callable] = CommandArgsFormat.IGNORE):
+    def command(cmd_method=None, *, mod_only: bool = False, args_format: Union[Callable, CommandArgsFormat] = CommandArgsFormat.IGNORE):
         if cmd_method:
             # decorator without arguments
-            return Command(cmd_method, private, args_format)
+            return Command(cmd_method, mod_only, args_format)
         else:
             def wrapper(cmd_method):
-                return Command(cmd_method, private, args_format)
+                return Command(cmd_method, mod_only, args_format)
             return wrapper
 
     @staticmethod
-    def _parse_pyramid_args(args: str) -> Tuple[str, int]:
+    def _parse_pyramid_args(args: str) -> tuple[str, int]:
         # !pyramid <size: number from 1 to 7> <text: string>
         # or !pyramid <text: string> (in this case, the pyramid will be of size 3)
         args = args.split()
@@ -162,7 +173,7 @@ class CommandHandler:
 
     @command
     def help(self):
-        self._irc_client.action('Commands: ' + ', '.join(f'!{cmd}' for cmd in dir(self) if isinstance(getattr(self, cmd), Command)))
+        self._irc_client.action('Commands: ' + ', '.join(self._cmd_list))
 
     @command
     def emote(self):
@@ -180,17 +191,17 @@ class CommandHandler:
         for i in range(1, size * 2):
             self._irc_client.say(' '.join([text] * (i if i <= size else 2 * size - i)))
 
-    @command(args_format=CommandArgsFormat.AS_IS)
+    @command(mod_only=True, args_format=CommandArgsFormat.AS_IS)
     def title(self, title: str):
         with requests.patch(f'{API_URL_BASE}/channels',
                             params={'broadcaster_id': USER_ID},
-                            headers=dict(**API_AUTH_HEADERS, **{'Content-Type': 'application/json'}),
+                            headers=API_AUTH_HEADERS | {'Content-Type': 'application/json'},
                             json={'title': title}) as resp:
             if not resp.ok:
                 print(f'{resp.status_code = } {resp.reason = }', file=sys.stderr)
-                raise CommandError('Faild to change title')
+                raise CommandError('Failed to change title')
 
-    @command(args_format=CommandArgsFormat.AS_IS)
+    @command(mod_only=True, args_format=CommandArgsFormat.AS_IS)
     def game(self, game: str):
         # lookup game ID first
         with requests.get(f'{API_URL_BASE}/games',
@@ -206,7 +217,7 @@ class CommandHandler:
 
         with requests.patch(f'{API_URL_BASE}/channels',
                             params={'broadcaster_id': USER_ID},
-                            headers=dict(**API_AUTH_HEADERS, **{'Content-Type': 'application/json'}),
+                            headers=API_AUTH_HEADERS | {'Content-Type': 'application/json'},
                             json={'game_id': games[0]['id']}) as resp:
             if not resp.ok:
                 print(f'{resp.status_code = } {resp.reason = }', file=sys.stderr)

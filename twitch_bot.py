@@ -34,8 +34,8 @@ class Bot:
 
     def main_loop(self):
         while True:
-            for user, message in self._irc_handler.get_messages():
-                self._command_handler(user, message)
+            for message in self._irc_handler.get_messages():
+                self._command_handler(message)
 
 
 def main():
