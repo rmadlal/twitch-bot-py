@@ -155,7 +155,6 @@ class CommandHandler:
                 return Command(cmd_method, mod_only, args_format)
             return wrapper
 
-    @staticmethod
     def _parse_pyramid_args(args: str) -> tuple[str, int]:
         # !pyramid <size: number from 1 to 7> <text: string>
         # or !pyramid <text: string> (in this case, the pyramid will be of size 3)
