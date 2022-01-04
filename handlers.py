@@ -6,7 +6,8 @@ import socket
 import sys
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Callable, Final, Iterable, Optional, Union
+from traceback import print_exc
+from typing import Any, Callable, Final, Iterable, Optional, Union
 
 BOT_USERNAME: Final = os.getenv('BOT_CHANNEL_NAME')
 MY_USERNAME: Final = os.getenv('CHANNEL_NAME')
@@ -39,7 +40,6 @@ class TwitchIRCHandler:
 
     def __init__(self):
         self._sock = socket.socket()
-        self._ffz_emote_cache = []
         self._re_end = re.compile(r'^:\w+\.tmi\.twitch\.tv 366 \w+ #(?P<channel_name>\w+) :End of /NAMES list$')
         self._re_message = re.compile(r'^@\S*user-type=(?P<user_type>\w+)?\S* :(?P<user>\w+)!\2@\2\.tmi\.twitch\.tv '
                                       rf'PRIVMSG #{MY_USERNAME} :(?P<message>.+)$')
@@ -81,7 +81,7 @@ class TwitchIRCHandler:
         self.say(msg if msg.startswith('/me ') else f'/me {msg}')
 
 
-class CommandError(ValueError):
+class CommandError(Exception):
     pass
 
 
@@ -122,7 +122,7 @@ class CommandHandler:
 
     def __init__(self, _irc_client: TwitchIRCHandler):
         self._irc_client = _irc_client
-        self._ffz_emote_cache = []
+        self._emote_cache = []
         self._re_cmd_call: Final = re.compile(r'!(?P<cmd>\w+)( +(?P<rest>\S.*))?')
         self._cmd_list: Final = [f'!{cmd_name} (mod only)' if cmd.is_mod_only else f'!{cmd_name}'
                                  for cmd_name in dir(self) if isinstance(cmd := getattr(self, cmd_name), Command)]
@@ -176,14 +176,24 @@ class CommandHandler:
 
     @command
     def emote(self):
-        if not self._ffz_emote_cache:
-            with requests.get(f'http://api.frankerfacez.com/v1/room/{MY_USERNAME}') as response:
-                response.raise_for_status()
-                data = response.json()
-            set_num = data['room']['set']
-            emoticons = data['sets'][str(set_num)]['emoticons']
-            self._ffz_emote_cache = [emote['name'] for emote in emoticons]
-        self._irc_client.say(random.choice(self._ffz_emote_cache))
+        def get_emotes(url: str, get_from_json: Callable[[Any], list[str]]) -> list[str]:
+            try:
+                with requests.get(url) as resp:
+                    resp.raise_for_status()
+                    return get_from_json(resp.json())
+            except requests.HTTPError:
+                print_exc()
+                return []
+
+        if not self._emote_cache:
+            self._emote_cache = \
+                get_emotes(f'http://api.frankerfacez.com/v1/room/{MY_USERNAME}',
+                           lambda data: [emote['name'] for emote in data['sets'][str(data['room']['set'])]['emoticons']]) + \
+                get_emotes(f'https://api.betterttv.net/3/cached/users/twitch/{USER_ID}',
+                           lambda data: [emote['code'] for emote in data['sharedEmotes']])
+
+        if self._emote_cache:
+            self._irc_client.say(random.choice(self._emote_cache))
 
     @command(args_format=_parse_pyramid_args)
     def pyramid(self, text: str, size: int):
@@ -192,32 +202,34 @@ class CommandHandler:
 
     @command(mod_only=True, args_format=CommandArgsFormat.AS_IS)
     def title(self, title: str):
-        with requests.patch(f'{API_URL_BASE}/channels',
-                            params={'broadcaster_id': USER_ID},
-                            headers=API_AUTH_HEADERS | {'Content-Type': 'application/json'},
-                            json={'title': title}) as resp:
-            if not resp.ok:
-                print(f'{resp.status_code = } {resp.reason = }', file=sys.stderr)
-                raise CommandError('Failed to change title')
+        try:
+            with requests.patch(f'{API_URL_BASE}/channels',
+                                params={'broadcaster_id': USER_ID},
+                                headers=API_AUTH_HEADERS | {'Content-Type': 'application/json'},
+                                json={'title': title}) as resp:
+                resp.raise_for_status()
+        except requests.HTTPError:
+            print_exc()
+            raise CommandError('Failed to change title')
 
     @command(mod_only=True, args_format=CommandArgsFormat.AS_IS)
     def game(self, game: str):
         # lookup game ID first
-        with requests.get(f'{API_URL_BASE}/games',
-                          params={'name': game},
-                          headers=API_AUTH_HEADERS) as resp:
-            if not resp.ok:
-                print(f'{resp.status_code = } {resp.reason = }', file=sys.stderr)
-                raise CommandError('Failed to change game')
+        try:
+            with requests.get(f'{API_URL_BASE}/games',
+                              params={'name': game},
+                              headers=API_AUTH_HEADERS) as resp:
+                resp.raise_for_status()
+                games = resp.json()['data']
 
-        games = resp.json()['data']
-        if not games:
-            raise CommandError('Game not found')
+            if not games:
+                raise CommandError('Game not found')
 
-        with requests.patch(f'{API_URL_BASE}/channels',
-                            params={'broadcaster_id': USER_ID},
-                            headers=API_AUTH_HEADERS | {'Content-Type': 'application/json'},
-                            json={'game_id': games[0]['id']}) as resp:
-            if not resp.ok:
-                print(f'{resp.status_code = } {resp.reason = }', file=sys.stderr)
-                raise CommandError('Failed to change game')
+            with requests.patch(f'{API_URL_BASE}/channels',
+                                params={'broadcaster_id': USER_ID},
+                                headers=API_AUTH_HEADERS | {'Content-Type': 'application/json'},
+                                json={'game_id': games[0]['id']}) as resp:
+                resp.raise_for_status()
+        except requests.HTTPError:
+            print_exc()
+            raise CommandError('Failed to change game')

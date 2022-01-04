@@ -3,6 +3,7 @@ import sys
 import time
 from contextlib import suppress
 from handlers import TwitchIRCHandler, CommandHandler
+from traceback import print_exc
 from typing import Final
 from util import repeat_every
 
@@ -43,8 +44,8 @@ def main():
         try:
             with Bot() as bot:
                 bot.main_loop()
-        except Exception as e:
-            print(repr(e), file=sys.stderr)
+        except Exception:
+            print_exc()
             time.sleep(10)
 
 
