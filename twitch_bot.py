@@ -2,9 +2,20 @@ import os
 import sys
 import time
 from contextlib import suppress
-from handlers import TwitchIRCHandler, CommandHandler
 from traceback import print_exc
 from typing import Final
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except (ImportError, IOError):
+    pass
+
+required_env = {'BOT_CHANNEL_NAME', 'CHANNEL_NAME', 'USER_ID', 'CHAT_OAUTH', 'API_CLIENT_ID', 'API_OAUTH'}
+if missing_env := required_env - set(os.environ):
+    sys.exit('Missing required environment variables ' + ', '.join(missing_env))
+
+from handlers import TwitchIRCHandler, CommandHandler
 from util import repeat_every
 
 EMOTE_FREQ_MINUTES: Final = float(os.getenv('EMOTE_FREQ_MINUTES', '0'))
@@ -46,7 +57,7 @@ def main():
                 bot.main_loop()
         except Exception:
             print_exc()
-            time.sleep(10)
+            time.sleep(1)
 
 
 if __name__ == '__main__':
