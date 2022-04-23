@@ -1,20 +1,10 @@
 import os
-import sys
 import time
 from contextlib import suppress
 from traceback import print_exc
 from typing import Final
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except (ImportError, IOError):
-    pass
-
-required_env = {'BOT_CHANNEL_NAME', 'CHANNEL_NAME', 'USER_ID', 'CHAT_OAUTH', 'API_CLIENT_ID', 'API_OAUTH'}
-if missing_env := required_env - set(os.environ):
-    sys.exit('Missing required environment variables ' + ', '.join(missing_env))
-
+import load_env  # pylint: disable=unused-import
 from handlers import TwitchIRCHandler, CommandHandler
 from util import repeat_every
 
@@ -22,11 +12,10 @@ EMOTE_FREQ_MINUTES: Final = float(os.getenv('EMOTE_FREQ_MINUTES', '0'))
 
 
 class Bot:
-
     def __init__(self):
         self._irc_handler = TwitchIRCHandler()
         self._command_handler = CommandHandler(self._irc_handler)
-        self._cancel_send_random_emotes = None
+        self._cancel_send_random_emotes = lambda: None
 
     def __enter__(self):
         self._irc_handler.connect()
@@ -35,8 +24,7 @@ class Bot:
         return self
 
     def __exit__(self, *_):
-        if self._cancel_send_random_emotes:
-            self._cancel_send_random_emotes()
+        self._cancel_send_random_emotes()
         self._irc_handler.disconnect()
 
     @repeat_every(EMOTE_FREQ_MINUTES * 60)
@@ -55,7 +43,7 @@ def main():
         try:
             with Bot() as bot:
                 bot.main_loop()
-        except Exception:
+        except Exception:  # pylint: disable=broad-except
             print_exc()
             time.sleep(1)
 

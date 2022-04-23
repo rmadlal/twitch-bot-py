@@ -1,13 +1,13 @@
 import os
 import random
 import re
-import requests
 import socket
-import sys
+import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from traceback import print_exc
-from typing import Any, Callable, Final, Iterable, Optional, Union
+from typing import Any, Callable, Final, Iterable, Optional
+import requests
 
 BOT_USERNAME: Final = os.getenv('BOT_CHANNEL_NAME')
 MY_USERNAME: Final = os.getenv('CHANNEL_NAME')
@@ -29,7 +29,7 @@ API_URL_BASE: Final = 'https://api.twitch.tv/helix'
 class ChatMessage:
     user: str
     message: str
-    user_type: Optional[str]
+    user_type: Optional[str] = None
 
     @property
     def is_mod(self):
@@ -37,7 +37,6 @@ class ChatMessage:
 
 
 class TwitchIRCHandler:
-
     def __init__(self):
         self._sock = socket.socket()
         self._re_end = re.compile(r'^:\w+\.tmi\.twitch\.tv 366 \w+ #(?P<channel_name>\w+) :End of /NAMES list$')
@@ -91,20 +90,41 @@ class CommandArgsFormat(Enum):
     SPLIT = auto()
 
 
-class Command:
-
+class command:  # pylint: disable=invalid-name
+    """
+    Decorator for creating commands in CommandHandler
+    """
     command_handler: Optional['CommandHandler'] = None
 
-    def __init__(self, cmd: Callable, mod_only: bool, args_format: Union[Callable, CommandArgsFormat]):
+    def __init__(self,
+                 cmd: Callable = None,
+                 *,
+                 mod_only: bool = False,
+                 args_format: Callable[[str], tuple] | CommandArgsFormat = CommandArgsFormat.IGNORE,
+                 cooldown: int = 0):
         self.__cmd = cmd
         self.__mod_only = mod_only
         self.__args_format = args_format
+        self.__cooldown = cooldown
+        self.__last_called_time = 0
 
-    def __call__(self, rest: str = ''):
+    def __call__(self, cmd: Callable = None, *, rest: str = ''):
+        if cmd:
+            # decorator with arguments
+            self.__cmd = cmd
+            return self
+
+        assert self.__cmd
+        if self.__cooldown > 0:
+            now_seconds = int(time.time())
+            if now_seconds - self.__last_called_time < self.__cooldown:
+                return
+            self.__last_called_time = now_seconds
+
         args = tuple()
         if self.__args_format == CommandArgsFormat.IGNORE:
             pass
-        if self.__args_format == CommandArgsFormat.AS_IS:
+        elif self.__args_format == CommandArgsFormat.AS_IS:
             args = (rest,) if rest else tuple()
         elif self.__args_format == CommandArgsFormat.SPLIT:
             args = tuple(rest.split())
@@ -119,45 +139,38 @@ class Command:
 
 
 class CommandHandler:
-
     def __init__(self, _irc_client: TwitchIRCHandler):
         self._irc_client = _irc_client
         self._emote_cache = []
         self._re_cmd_call: Final = re.compile(r'!(?P<cmd>\w+)( +(?P<rest>\S.*))?')
-        self._cmd_list: Final = [f'!{cmd_name} (mod only)' if cmd.is_mod_only else f'!{cmd_name}'
-                                 for cmd_name in dir(self) if isinstance(cmd := getattr(self, cmd_name), Command)]
-        Command.command_handler = self
+        self._cmd_list: Final = [cmd_name + (' (mod only)' if cmd.is_mod_only else '')
+                                 for cmd_name in dir(self) if isinstance(cmd := getattr(self, cmd_name), command)]
+        command.command_handler = self
 
     def __call__(self, message: ChatMessage):
-        if message.user == BOT_USERNAME or not (m := self._re_cmd_call.match(message.message)):
+        if message.user == BOT_USERNAME or not (cmd_call_match := self._re_cmd_call.match(message.message)):
             return
 
-        cmd, rest = m['cmd'], m['rest'] or ''
+        cmd = cmd_call_match['cmd']
+        rest = cmd_call_match['rest'] or ''
         cmd_method = getattr(self, cmd, None)
-        if not (cmd_method or isinstance(cmd_method, Command)):
+        if not (cmd_method or isinstance(cmd_method, command)):
             # Unknown command, show help instead
             self.help()
             return
 
         try:
             if not cmd_method.is_mod_only or message.is_mod:
-                cmd_method(rest)
-        except CommandError as e:
-            self._irc_client.action(str(e))
+                cmd_method(rest=rest)
+        except CommandError as ex:
+            self._irc_client.action(str(ex))
 
-    # decorator
-    def command(cmd_method=None, *, mod_only: bool = False, args_format: Union[Callable, CommandArgsFormat] = CommandArgsFormat.IGNORE):
-        if cmd_method:
-            # decorator without arguments
-            return Command(cmd_method, mod_only, args_format)
-        else:
-            def wrapper(cmd_method):
-                return Command(cmd_method, mod_only, args_format)
-            return wrapper
-
+    @staticmethod
     def _parse_pyramid_args(args: str) -> tuple[str, int]:
-        # !pyramid <size: number from 1 to 7> <text: string>
-        # or !pyramid <text: string> (in this case, the pyramid will be of size 3)
+        """
+        !pyramid <size: number from 1 to 7> <text: string>
+        or !pyramid <text: string> (in this case, the pyramid will be of size 3)
+        """
         args = args.split()
         if not args:
             raise CommandError('Usage: !pyramid [<size>] <text>')
